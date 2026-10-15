@@ -122,7 +122,8 @@
       .map((p) => p.replace(/^#/, "").trim()).filter((p) => p && p !== "Discord");
     if (partes.length > 1) partes.pop(); // nome do servidor
     const comLetras = partes.filter((p) => /[\p{L}\p{N}]/u.test(p));
-    return comLetras.join(" ") || partes.join(" ");
+    // "💸│placa-vídeo" -> "placa-vídeo"
+    return (comLetras.join(" ") || partes.join(" ")).replace(/^[^\p{L}\p{N}]+/u, "");
   }
   function heartbeat() {
     const channel = currentChannel();
