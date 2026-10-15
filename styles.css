@@ -207,3 +207,22 @@ button { font: inherit; cursor: pointer; }
 .meta .canal { color: var(--purple); font-weight: 800; }
 @media (prefers-color-scheme: dark) { .meta .canal { color: #b98cff; } }
 .coupon .mais { background: var(--orange); color: #fff; border-radius: 4px; padding: 0 4px; font-size: 11px; }
+
+/* Histórico de preços do item */
+.hist { font-size: 11.5px; line-height: 1.35; color: var(--muted); }
+.hist b { color: var(--text); font-weight: 800; }
+.hist-tag { display: inline-block; font-size: 10.5px; font-weight: 800; padding: 1px 6px; border-radius: 4px; background: var(--line); color: var(--text); white-space: nowrap; }
+.hist-tag.melhor { background: var(--green); color: #fff; }
+.hist-tag.abaixo { background: rgba(0, 168, 90, .15); color: var(--green); }
+.hist-tag.acima { background: rgba(226, 38, 77, .12); color: var(--red); }
+.hist-box { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.hist-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.hist-top span { color: var(--muted); font-size: 13px; font-weight: 700; text-align: right; }
+.hist-nums { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; text-align: center; }
+.hist-nums div { background: var(--bg); border-radius: 8px; padding: 8px 4px; display: flex; flex-direction: column; gap: 2px; }
+.hist-nums small { color: var(--muted); font-size: 11px; }
+.hist-nums b { font-size: 15px; }
+.hist-lista { display: flex; flex-direction: column; font-size: 13px; }
+.hist-lista div { display: grid; grid-template-columns: 90px 1fr auto; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.hist-lista div span:first-child { color: var(--muted); }
+.hist-box > .hist-tag { align-self: flex-start; font-size: 12px; padding: 3px 8px; }

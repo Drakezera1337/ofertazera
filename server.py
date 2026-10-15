@@ -521,6 +521,154 @@ def save_parsed(mid, text, parsed, matched, overwrite_store=False):
          parsed["image"], json.dumps(parsed["links"]), json.dumps(parsed["images"]),
          json.dumps(matched), mid),
     )
+    registrar_preco(mid)
+
+
+# --------------------------------------------------------------------------- #
+# Histórico de preços por item
+# Cada oferta com preço vira um registro em historico_precos, ligado a um "item":
+# o modelo (ex.: "RTX 5060 Ti 8GB", "PS5 Slim Digital") ou, se o modelo não for
+# reconhecido, o código do produto na loja (KaBuM, Shopee, Mercado Livre...).
+# --------------------------------------------------------------------------- #
+_db.executescript("""
+    CREATE TABLE IF NOT EXISTS historico_precos (
+        offer_id TEXT PRIMARY KEY,
+        item_key TEXT,
+        item_nome TEXT,
+        preco REAL,
+        loja TEXT,
+        data INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_hist_item ON historico_precos(item_key, data);
+""")
+try:
+    _db.execute("ALTER TABLE historico_precos ADD COLUMN produto TEXT")  # link do produto (identifica repost)
+except sqlite3.OperationalError:
+    pass
+
+VRAM_OK = {2, 3, 4, 6, 8, 10, 11, 12, 16, 20, 24, 32}
+SUFIXO_GPU = {"ti": "Ti", "super": "Super", "ti super": "Ti Super", "xt": "XT", "xtx": "XTX", "gre": "GRE"}
+NAO_E_PECA_AVULSA = r"\b(notebook|laptop|pc gamer|computador|desktop|kit upgrade)\b"
+ACESSORIO = r"\b(controle|dualsense|capa|case|suporte|base|cabo|headset|fone|skin|pelicula|camera|volante|carregador|dock|bolsa)\b"
+
+
+def _bundle(s):
+    return bool(re.search(r"\+|\bbundle\b|\bjogos?\b|\bcom (o )?jogo|mario|pokemon|zelda", s))
+
+
+def identificar_item(titulo, url=""):
+    """Devolve (chave, nome) do item, ou (None, None) se não der para saber qual é."""
+    s = " " + re.sub(r"[^a-z0-9+.\s-]", " ", normalize(titulo or "")) + " "
+    s = re.sub(r"\s+", " ", s)
+
+    # Placa de vídeo: RTX 5060 Ti 8GB, RX 9070 XT 16GB, Arc B580 12GB
+    m = re.search(r"\b(rtx|gtx|rx|arc)\s*-?\s*([a-z]?\d{3,4})\s*(ti\s*super|ti|super|xtx|xt|gre)?\b", s)
+    if m and not re.search(NAO_E_PECA_AVULSA, s):
+        marca, modelo, suf = m.group(1), m.group(2), re.sub(r"\s+", " ", m.group(3) or "")
+        vram = None
+        for v in re.findall(r"\b(\d{1,2})\s*gb\b", s) + re.findall(r"\bo?(\d{1,2})g\b", s):
+            if int(v) in VRAM_OK:
+                vram = int(v)
+                break
+        nome = f"{marca.upper()} {modelo.upper()}" + (f" {SUFIXO_GPU[suf]}" if suf else "") + (f" {vram}GB" if vram else "")
+        return "gpu:" + nome.lower(), nome
+
+    console = " console " in s or s.strip().startswith(("ps5", "playstation", "nintendo switch", "xbox series"))
+    if console and not re.search(ACESSORIO, s.replace("controle sem fio dualsense", "")):
+        extra = " + jogo" if _bundle(s) else ""
+        if re.search(r"\b(ps5|playstation\s*5)\b", s):
+            versao = "Pro" if re.search(r"\bpro\b", s) else ("Slim" if "slim" in s else "")
+            midia = "Digital" if "digital" in s else ("Disco" if re.search(r"\b(disk|disco|midia fisica|leitor|standard)\b", s) else "")
+            nome = " ".join(p for p in ("PS5", versao, midia) if p) + extra
+            return "console:" + nome.lower(), nome
+        if "switch" in s:
+            if re.search(r"switch\s*2\b", s):
+                nome = "Nintendo Switch 2"
+            elif "oled" in s:
+                nome = "Nintendo Switch OLED"
+            elif "lite" in s:
+                nome = "Nintendo Switch Lite"
+            else:
+                nome = "Nintendo Switch"
+            nome += extra
+            return "console:" + nome.lower(), nome
+        m = re.search(r"xbox\s*series\s*(s|x)\b", s)
+        if m:
+            cap = re.search(r"\b(512\s*gb|1\s*tb|2\s*tb)\b", s)
+            nome = f"Xbox Series {m.group(1).upper()}" + (f" {cap.group(1).replace(' ', '').upper()}" if cap else "") + extra
+            return "console:" + nome.lower(), nome
+
+    if re.search(r"\bdualsense\b", s) and not console:
+        nome = "Controle DualSense Edge" if "edge" in s else "Controle DualSense"
+        return "controle:" + nome.lower(), nome
+    if re.search(r"\bcontrole\b.*\bxbox\b|\bxbox\b.*\bcontrole\b", s) and not console:
+        return "controle:controle xbox", "Controle Xbox"
+
+    # Não reconheceu o modelo: usa o código do produto na loja
+    u = url or ""
+    for padrao, loja in ((r"kabum\.com\.br/produto/(\d+)", "kabum"), (r"shopee\.com\.br/.*?i\.(\d+\.\d+)", "shopee"),
+                         (r"shopee\.com\.br/(?:product|opaanlp)/(\d+/\d+)", "shopee"), (r"(MLB-?\d{6,})", "ml"),
+                         (r"amazon\.com\.br/.*?/(?:dp|gp/product)/([A-Z0-9]{10})", "amazon"),
+                         (r"magazineluiza\.com\.br/.*?/p/([a-z0-9]{6,})/", "magalu"),
+                         (r"pichau\.com\.br/([a-z0-9-]{15,})", "pichau")):
+        m = re.search(padrao, u, re.I)
+        if m:
+            return f"{loja}:{m.group(1).replace('/', '.').replace('-', '').lower()}", clean_line(titulo or "")[:60]
+    return None, None
+
+
+def registrar_preco(mid):
+    o = db_one("SELECT id, title, price, store, posted_at, link, final_url FROM offers WHERE id=?", (mid,))
+    chave, nome = (None, None)
+    if o and o["price"] and o["price"] >= 20:
+        chave, nome = identificar_item(o["title"], o["final_url"] or o["link"] or "")
+    if not chave:
+        db_exec("DELETE FROM historico_precos WHERE offer_id=?", (mid,))
+        return
+    produto = (o["final_url"] or o["link"] or o["title"] or "").split("?")[0].lower()
+    db_exec("INSERT OR REPLACE INTO historico_precos(offer_id, item_key, item_nome, preco, loja, data, produto) VALUES(?,?,?,?,?,?,?)",
+            (mid, chave, nome, o["price"], o["store"], o["posted_at"], produto))
+
+
+def estatisticas(chave):
+    """Menor preço (e quando), média e quantidade, sem contar repost (mesmo produto e preço no mesmo dia)."""
+    rows = db_all("SELECT item_nome, preco, loja, data, produto FROM historico_precos WHERE item_key=? ORDER BY data", (chave,))
+    vistos, lista = set(), []
+    for r in rows:
+        k = (r["preco"], r["produto"] or (r["loja"] or "").lower(), time.strftime("%Y-%m-%d", time.localtime(r["data"] / 1000)))
+        if k not in vistos:
+            vistos.add(k)
+            lista.append(r)
+    if not lista:
+        return None
+    menor = min(lista, key=lambda r: (r["preco"], r["data"]))
+    return {
+        "nome": lista[-1]["item_nome"],
+        "menor": menor["preco"],
+        "menorEm": menor["data"],
+        "menorLoja": menor["loja"],
+        "media": round(sum(r["preco"] for r in lista) / len(lista), 2),
+        "maior": max(r["preco"] for r in lista),
+        "n": len(lista),
+        "ultimos": [{"preco": r["preco"], "loja": r["loja"], "data": r["data"]} for r in lista[-8:]][::-1],
+    }
+
+
+def anexar_historico(ofertas):
+    """Coloca em cada oferta o resumo do histórico do item dela (uma consulta por item)."""
+    ids = [o["id"] for o in ofertas]
+    chaves = {}
+    for i in range(0, len(ids), 500):
+        parte = ids[i:i + 500]
+        for r in db_all(f"SELECT offer_id, item_key FROM historico_precos WHERE offer_id IN ({','.join('?' * len(parte))})", parte):
+            chaves[r["offer_id"]] = r["item_key"]
+    cache = {}
+    for o in ofertas:
+        k = chaves.get(o["id"])
+        if k and k not in cache:
+            cache[k] = estatisticas(k)
+        o["historico"] = cache.get(k) if k else None
+    return ofertas
 
 
 # Fila única que abre os links das ofertas (uma página por vez): descobre a loja dos encurtadores
@@ -549,6 +697,7 @@ def enriquecer(mid, link):
     db_exec("""UPDATE offers SET final_url=?, og_image=?, enriquecido=1, store=COALESCE(store, ?),
                image=COALESCE(?, image), images=? WHERE id=?""",
             (final or "", foto, store, foto, json.dumps(imagens), mid))
+    registrar_preco(mid)  # com o link final dá para reconhecer o produto pelo código da loja
     if foto or (store and not row["store"]):
         avisar_mudanca()
     print(f"[foto] {'ok ' if foto else '-- '} {(store or row['store'] or '?'):14} {(final or link)[:70]}")
@@ -756,7 +905,7 @@ def status_monitor():
 def publicar_gist(incluir_alertas=False):
     rows = db_all("SELECT * FROM offers ORDER BY posted_at DESC LIMIT ?", (PUBLICAR_MAX,))
     arquivos = {"ofertas.json": {"content": json.dumps({
-        "ofertas": [oferta_publica(r) for r in rows],
+        "ofertas": anexar_historico([oferta_publica(r) for r in rows]),
         "status": status_monitor(),
         "ts": int(time.time() * 1000),
     }, ensure_ascii=False)}}
@@ -814,6 +963,14 @@ def enviar_push(payload, inscricoes=None):
     return ok
 
 
+MESES = ("jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez")
+
+
+def mes_ano(ms):
+    t = time.localtime(ms / 1000)
+    return f"{MESES[t.tm_mon - 1]}/{t.tm_year}"
+
+
 def payload_oferta(o, matched):
     linhas = []
     if o.get("price"):
@@ -828,6 +985,12 @@ def payload_oferta(o, matched):
         linhas.append(("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"]))
     elif o.get("coupon_note"):
         linhas.append("🎟️ " + o["coupon_note"] + " — resgate antes")
+    hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
+    if hist and hist["n"] > 1:
+        if o["price"] <= hist["menor"]:
+            linhas.append(f"🔥 Menor preço já visto (média {fmt_brl(hist['media'])})")
+        else:
+            linhas.append(f"📊 Menor {fmt_brl(hist['menor'])} ({mes_ano(hist['menorEm'])}) · média {fmt_brl(hist['media'])}")
     titulo = o["title"]
     if matched:
         titulo = f"🎯 {matched[0]} · {titulo}"
@@ -835,6 +998,8 @@ def payload_oferta(o, matched):
     resumo = {k: o.get(k) for k in ("id", "title", "price", "old_price", "coupon", "coupon_note",
                                     "link", "coupon_link", "store", "image", "posted_at", "channel")}
     resumo["coupons"] = cupons
+    if hist:  # sem a lista "ultimos": o push tem limite de tamanho
+        resumo["historico"] = {k: v for k, v in hist.items() if k != "ultimos"}
     return {
         "title": titulo[:120],
         "body": "\n".join(linhas) or (o.get("text") or "")[:160],
@@ -963,7 +1128,7 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/offers":
             limit = min(int(qs.get("limit") or 200), 500)
             rows = db_all("SELECT * FROM offers ORDER BY posted_at DESC LIMIT ?", (limit,))
-            return self._json([offer_row_to_json(r) for r in rows])
+            return self._json(anexar_historico([offer_row_to_json(r) for r in rows]))
         if path == "/api/alertas":
             return self._json(alertas_json())
         if path == "/api/status":

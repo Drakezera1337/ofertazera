@@ -42,6 +42,14 @@ Se a aba fechar, o celular recebe "⚠️ Ofertazera parou de monitorar".
 
 Tocar na notificação abre a loja direto; se tiver cupom, abre o detalhe com **Copiar cupom e ir à loja**.
 
+## Histórico de preços
+
+Cada oferta com preço entra no histórico do item (tabela `historico_precos` do `ofertazera.db`).
+O item é o modelo reconhecido no título (ex.: **RTX 5060 Ti 8GB**, **PS5 Slim Digital**, **Nintendo Switch OLED + jogo**,
+**Xbox Series S 512GB**, **Controle DualSense**) ou, se não reconhecer, o código do produto na loja.
+O card mostra **menor preço (mês/ano)** e **média**, com 🔥 quando é o menor já visto; o detalhe mostra a lista.
+Repost do mesmo produto, pelo mesmo preço e no mesmo dia, conta uma vez só.
+
 ## Alertas
 
 | Você escreve | Significa |

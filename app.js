@@ -179,6 +179,39 @@ function nomeCanal(o) {
   return canaisConhecidos().length > 1 ? (S.status?.nomesCanais || {})[o.channel] || '' : '';
 }
 
+// ---------------------------------------------------------------- histórico de preços do item
+const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
+const mesAno = (ms) => { const d = new Date(ms); return `${MESES[d.getMonth()]}/${d.getFullYear()}`; };
+// Comparação do preço desta oferta com o histórico: menor já visto / % abaixo ou acima da média
+function comparacao(o, h) {
+  if (h.n < 2) return '';
+  if (o.price <= h.menor) return '<span class="hist-tag melhor">🔥 menor preço já visto</span>';
+  const pct = Math.round((o.price / h.media - 1) * 100);
+  if (pct <= -1) return `<span class="hist-tag abaixo">${pct}% da média</span>`;
+  if (pct >= 1) return `<span class="hist-tag acima">+${pct}% da média</span>`;
+  return '<span class="hist-tag">na média</span>';
+}
+function historicoCard(o) {
+  const h = o.historico;
+  if (!o.price || !h) return '';
+  if (h.n < 2) return `<div class="hist" title="${esc(h.nome)}">📊 1º registro de ${esc(h.nome)}</div>`;
+  return `<div class="hist" title="${esc(h.nome)}">📊 Menor <b>${brl(h.menor)}</b> (${mesAno(h.menorEm)}) · Média <b>${brl(Math.round(h.media))}</b> ${comparacao(o, h)}</div>`;
+}
+function historicoDetalhe(o) {
+  const h = o.historico;
+  if (!o.price || !h) return '';
+  return `<div class="hist-box">
+    <div class="hist-top"><b>📊 Histórico de preços</b><span>${esc(h.nome)}</span></div>
+    <div class="hist-nums">
+      <div><small>Menor</small><b>${brl(h.menor)}</b><small>${mesAno(h.menorEm)}${h.menorLoja ? ' · ' + esc(h.menorLoja) : ''}</small></div>
+      <div><small>Média</small><b>${brl(Math.round(h.media))}</b><small>${h.n} oferta${h.n > 1 ? 's' : ''}</small></div>
+      <div><small>Maior</small><b>${brl(h.maior)}</b></div>
+    </div>
+    ${comparacao(o, h)}
+    ${(h.ultimos || []).length > 1 ? `<div class="hist-lista">${h.ultimos.map((u) => `<div><span>${new Date(u.data).toLocaleDateString('pt-BR')}</span><span>${esc(u.loja || '')}</span><b>${brl(u.preco)}</b></div>`).join('')}</div>` : ''}
+  </div>`;
+}
+
 // Foto que não abre (ex.: link do Discord expirado): tenta a próxima da oferta; sem nenhuma, fica o ícone
 function fotoFalhou(img) {
   const alts = (img.dataset.alts || '').split(' ').filter(Boolean);
@@ -201,6 +234,7 @@ function card(o) {
       <p class="title">${esc(o.title)}</p>
       ${o.matched?.length ? `<div class="tags">${o.matched.map((m) => `<span class="tag">🎯 ${esc(m)}</span>`).join('')}</div>` : ''}
       ${o.price ? `<div class="price-row"><span class="price">${brl(o.price)}</span>${o.old_price ? `<span class="old">${brl(o.old_price)}</span>` : ''}${d > 0 ? `<span class="off">-${d}%</span>` : ''}</div>` : ''}
+      ${historicoCard(o)}
       ${o.coupon ? `<button class="coupon" data-copy="${esc(o.coupon)}">${ICON.copy}${esc(o.coupon)}${(o.coupons?.length || 0) > 1 ? ` <span class="mais">+${o.coupons.length - 1}</span>` : ''}</button>` : o.coupon_note ? `<span class="coupon note">🎟️ ${esc(o.coupon_note)}</span>` : ''}
       <div class="meta"><span class="store">${esc(o.store || 'Oferta')}${nomeCanal(o) ? ` · <span class="canal">#${esc(nomeCanal(o))}</span>` : ''}</span><span>${ago(o.posted_at)}</span></div>
     </div>
@@ -286,6 +320,7 @@ function renderDetail(id, resumo) {
         <button class="btn btn-orange btn-sm" data-copy="${esc(c)}">Copiar</button></div>`).join('')}
       ${!o.coupon && o.coupon_note ? `<div class="coupon-big"><div><small>CUPOM PARA RESGATAR</small><strong style="font-size:17px">🎟️ ${esc(o.coupon_note)}</strong></div>
         ${o.coupon_link ? `<a class="btn btn-orange btn-sm" href="${esc(o.coupon_link)}" target="_blank" rel="noopener">Resgatar</a>` : ''}</div>` : ''}
+      ${historicoDetalhe(o)}
       ${o.text ? `<div class="msg">${linkify(o.text)}</div>` : ''}
       ${o.author ? `<div class="kv"><span>Postado por</span><b>${esc(o.author)}</b><span>Horário</span><b>${new Date(o.posted_at).toLocaleString('pt-BR')}</b></div>` : ''}
     </div>
