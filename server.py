@@ -69,7 +69,7 @@ _db.executescript(
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
     """
 )
-for _col in ("coupon_note TEXT", "coupon_link TEXT", "final_url TEXT"):
+for _col in ("coupon_note TEXT", "coupon_link TEXT", "final_url TEXT", "coupons TEXT"):
     try:
         _db.execute(f"ALTER TABLE offers ADD COLUMN {_col}")
     except sqlite3.OperationalError:
@@ -236,15 +236,24 @@ def clean_line(line):
 
 def make_title(text):
     for raw in (text or "").splitlines():
+        if raw.strip().startswith("@"):  # mencao de cargo (@Video-Game, @Placa de video)
+            continue
         line = clean_line(raw)
         if len(line) < 4:
             continue
         low = normalize(line)
         if re.fullmatch(r"(r\$\s*[\d.,]+\s*)+", low):
             continue
-        if low.startswith(("cupom", "link", "compre", "de r$", "por r$", "preco", "frete")):
+        if re.fullmatch(r"cupom\s*:?\s*\S+", low):  # "Cupom: CODIGO" sozinho
+            continue
+        if low.startswith(("link", "compre", "de r$", "por r$", "preco", "frete", "resgate", "ative")):
             continue
         return line[:140]
+    # So sobrou a linha da mencao: "@Placa de vídeo RX 9070 GRE" (mencao e produto na mesma linha)
+    for raw in (text or "").splitlines():
+        line = clean_line(raw.strip().lstrip("@"))
+        if raw.strip().startswith("@") and len(line) > 15:
+            return line[:140]
     return clean_line(text or "")[:140] or "Oferta"
 
 
@@ -260,8 +269,15 @@ def parse_offer(msg):
     if m:
         old_price, price = parse_brl(m.group(1)), parse_brl(m.group(2))
     if price is None:
-        found = [parse_brl(p) for p in PRICE_RE.findall(text)]
-        found = [p for p in found if p]
+        found = []
+        for pm in PRICE_RE.finditer(text):
+            antes = normalize(text[max(0, pm.start() - 16):pm.start()]).rstrip(" :~*")
+            depois = normalize(text[pm.end():pm.end() + 6]).lstrip(" ~*")
+            if depois.startswith("off") or re.search(r"(acima de|\bem|limite(?: de)?|minimo(?: de)?|\bate|compras de)$", antes):
+                continue  # regra do cupom, nao e o preco do produto
+            v = parse_brl(pm.group(1))
+            if v:
+                found.append(v)
         # mensagens costumam vir "~~R$ 4.199~~ R$ 3.499": preco riscado primeiro
         strike = re.search(r"~~[^~]*R\$\s*([\d.,]+)[^~]*~~", text)
         if strike:
@@ -278,19 +294,19 @@ def parse_offer(msg):
     if old_price is not None and price is not None and old_price <= price:
         old_price = None
 
-    coupon = None
-    for cm in COUPON_RE.finditer(text):
-        cand = cm.group(1).strip("`*_\"'")
-        if normalize(cand) in COUPON_STOPWORDS or len(cand) < 3:
-            continue
-        if not re.search(r"[A-Z0-9]", cand):  # cupons quase sempre maiusculos/numeros
-            continue
-        coupon = cand
-        break
-    if coupon is None and codes:
-        good = [c for c in codes if re.fullmatch(r"[A-Za-z0-9_\-]{3,25}", c) and not c.startswith("http")]
-        if good:
-            coupon = good[0]
+    def codigo_ok(c):
+        # "TORCEDOR10", "PLAY10", "promo10" sim; "Mercado", "Shopee" (nome da loja) nao
+        return (re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_\-]{2,24}", c) and normalize(c) not in COUPON_STOPWORDS
+                and (c.isupper() or re.search(r"\d", c)) and re.search(r"[A-Za-z]", c))
+    coupons = []
+    candidatos = [cm.group(1).strip("`*_\"'") for cm in COUPON_RE.finditer(text)]
+    # "5% OFF acima de R$ 79, limite R$ 30: TORCEDOR10" -> codigo no fim da linha, depois de ":"
+    candidatos += [m.group(1) for m in re.finditer(r":\s*[`*_\"']*([A-Z][A-Z0-9_\-]{3,24})[`*_\"']*\s*$", text, re.M)]
+    candidatos += [c for c in codes if not c.startswith("http")]
+    for c in candidatos:
+        if codigo_ok(c) and c not in coupons:
+            coupons.append(c)
+    coupon = coupons[0] if coupons else None
 
     product_link, coupon_link = classify_links(text, links)
 
@@ -309,6 +325,7 @@ def parse_offer(msg):
         "price": price,
         "old_price": old_price,
         "coupon": coupon,
+        "coupons": coupons,
         "coupon_note": coupon_note,
         "link": product_link,
         "coupon_link": coupon_link,
@@ -392,7 +409,8 @@ def find_matches(offer):
 # --------------------------------------------------------------------------- #
 # Ingestao
 # --------------------------------------------------------------------------- #
-STATE = {"last_heartbeat": 0, "heartbeat_info": {}, "warned_down": False, "last_ingest": 0}
+# canais: {id: {"ultimoSinal": ms, "avisado": bool}} - cada canal fica aberto numa aba do Chrome
+STATE = {"last_heartbeat": 0, "canais": {}, "last_ingest": 0}
 _poll_cond = threading.Condition()
 
 
@@ -400,6 +418,7 @@ def offer_row_to_json(r):
     r = dict(r)
     r["links"] = json.loads(r.get("links") or "[]")
     r["images"] = json.loads(r.get("images") or "[]")
+    r["coupons"] = json.loads(r.get("coupons") or "[]")
     r["matched"] = json.loads(r.get("matched") or "[]")
     r.pop("fav", None)
     r.pop("notified", None)
@@ -456,9 +475,9 @@ def ingest(msg):
 def save_parsed(mid, text, parsed, matched, overwrite_store=False):
     store_sql = "store=?" if overwrite_store else "store=COALESCE(?, store)"
     db_exec(
-        f"""UPDATE offers SET text=?, title=?, price=?, old_price=?, coupon=?, coupon_note=?, link=?,
+        f"""UPDATE offers SET text=?, title=?, price=?, old_price=?, coupon=?, coupons=?, coupon_note=?, link=?,
            coupon_link=?, {store_sql}, image=?, links=?, images=?, matched=? WHERE id=?""",
-        (text, parsed["title"], parsed["price"], parsed["old_price"], parsed["coupon"],
+        (text, parsed["title"], parsed["price"], parsed["old_price"], parsed["coupon"], json.dumps(parsed["coupons"]),
          parsed["coupon_note"], parsed["link"], parsed["coupon_link"], parsed["store"],
          parsed["image"], json.dumps(parsed["links"]), json.dumps(parsed["images"]),
          json.dumps(matched), mid),
@@ -631,18 +650,28 @@ def json_do_arquivo(arquivos, nome, padrao):
 def oferta_publica(r):
     o = offer_row_to_json(r)
     o["text"] = (o.get("text") or "")[:1500]
-    for k in ("final_url", "channel", "received_at"):
+    for k in ("final_url", "received_at"):
         o.pop(k, None)
     return o
 
 
+def nomes_canais():
+    """{id: nome} dos canais (o nome vem do titulo da aba e fica guardado)."""
+    return json.loads(get_setting("canais") or "{}")
+
+
 def status_monitor():
     agora = time.time() * 1000
+    nomes = nomes_canais()
+    canais = [{"id": cid, "nome": nomes.get(cid) or cid, "ultimoSinal": c["ultimoSinal"],
+               "ativo": agora - c["ultimoSinal"] < 90_000} for cid, c in STATE["canais"].items()]
     last = STATE["last_heartbeat"]
     return {
-        "monitorando": bool(last) and (agora - last) < 90_000,
+        "monitorando": any(c["ativo"] for c in canais),
         "ultimoSinal": last,
-        "canal": (STATE["heartbeat_info"] or {}).get("channelName") or "",
+        "canal": ", ".join(c["nome"] for c in canais if c["ativo"]),
+        "canais": canais,
+        "nomesCanais": nomes,
     }
 
 
@@ -716,8 +745,9 @@ def payload_oferta(o, matched):
         linhas.append("💰 " + p + (f" · {o['store']}" if o.get("store") else ""))
     elif o.get("store"):
         linhas.append("🛒 " + o["store"])
-    if o.get("coupon"):
-        linhas.append("🏷️ Cupom: " + o["coupon"])
+    cupons = json.loads(o["coupons"]) if isinstance(o.get("coupons"), str) else (o.get("coupons") or [])
+    if cupons or o.get("coupon"):
+        linhas.append(("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"]))
     elif o.get("coupon_note"):
         linhas.append("🎟️ " + o["coupon_note"] + " — resgate antes")
     titulo = o["title"]
@@ -725,7 +755,8 @@ def payload_oferta(o, matched):
         titulo = f"🎯 {matched[0]} · {titulo}"
     # Resumo da oferta vai junto: o app abre o detalhe na hora, mesmo antes do Gist atualizar
     resumo = {k: o.get(k) for k in ("id", "title", "price", "old_price", "coupon", "coupon_note",
-                                    "link", "coupon_link", "store", "image", "posted_at")}
+                                    "link", "coupon_link", "store", "image", "posted_at", "channel")}
+    resumo["coupons"] = cupons
     return {
         "title": titulo[:120],
         "body": "\n".join(linhas) or (o.get("text") or "")[:160],
@@ -795,16 +826,15 @@ def laco_gist():
 def watchdog():
     while True:
         time.sleep(30)
-        last = STATE["last_heartbeat"]
-        if not last:
-            continue
-        idle_min = (time.time() * 1000 - last) / 60000
-        if idle_min > HEARTBEAT_ALERT_MIN and not STATE["warned_down"]:
-            STATE["warned_down"] = True
-            _publicar.set()
-            enviar_push({"title": "⚠️ Ofertazera parou de monitorar",
-                         "body": "A aba do Discord fechou ou o PC dormiu. Abra o canal no Chrome do PC.",
-                         "tag": "ofertazera-monitor"})
+        nomes = nomes_canais()
+        for cid, c in list(STATE["canais"].items()):
+            idle_min = (time.time() * 1000 - c["ultimoSinal"]) / 60000
+            if idle_min > HEARTBEAT_ALERT_MIN and not c["avisado"]:
+                c["avisado"] = True
+                _publicar.set()
+                enviar_push({"title": f"⚠️ Parou de monitorar: {nomes.get(cid) or 'canal'}",
+                             "body": "A aba desse canal fechou ou o PC dormiu. Abra o canal no Chrome do PC.",
+                             "tag": "ofertazera-monitor-" + cid})
 
 
 # --------------------------------------------------------------------------- #
@@ -902,13 +932,23 @@ class Handler(SimpleHTTPRequestHandler):
             n = sum(1 for m in msgs if ingest(m))
             return self._json({"ok": True, "processed": n})
         if path == "/api/heartbeat":
-            STATE["last_heartbeat"] = int(time.time() * 1000)
-            STATE["heartbeat_info"] = body
-            if STATE["warned_down"]:
-                STATE["warned_down"] = False
+            agora = int(time.time() * 1000)
+            m = re.search(r"/channels/[^/]+/(\d+)", str(body.get("url") or ""))
+            cid = str(body.get("channel") or (m.group(1) if m else "?"))
+            STATE["last_heartbeat"] = agora
+            c = STATE["canais"].setdefault(cid, {"ultimoSinal": agora, "avisado": False})
+            c["ultimoSinal"] = agora
+            nome = str(body.get("channelName") or "").strip()[:60]
+            nomes = nomes_canais()
+            if nome and nomes.get(cid) != nome:
+                nomes[cid] = nome
+                set_setting("canais", json.dumps(nomes, ensure_ascii=False))
                 _publicar.set()
-                enviar_push({"title": "✅ Ofertazera voltou a monitorar", "body": "Tudo certo de novo.",
-                             "tag": "ofertazera-monitor"})
+            if c["avisado"]:
+                c["avisado"] = False
+                _publicar.set()
+                enviar_push({"title": f"✅ Voltou a monitorar: {nomes.get(cid) or 'canal'}", "body": "Tudo certo de novo.",
+                             "tag": "ofertazera-monitor-" + cid})
             return self._json({"ok": True})
         if path == "/api/alertas":
             STATE["alertas_sujos"] = True

@@ -1,4 +1,4 @@
-const DEFAULTS = { server: "http://localhost:8787", channels: "848739551295176765" };
+const DEFAULTS = { server: "http://localhost:8787", channels: "848739551295176765, 772928307251118100, 1087857136136093736" };
 const $ = (id) => document.getElementById(id);
 
 chrome.storage.sync.get(DEFAULTS, (cfg) => {

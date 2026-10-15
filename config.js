@@ -2,7 +2,7 @@
 // sitePublico: GitHub Pages — usado no QR code que configura o celular.
 // pushChavePublica: chave VAPID pública; a privada fica só no PC (push_vapid.pem do server.py, fora do git).
 // Versão publicada (atualizada por versao.py) — aparece em Ajustes
-const OZ_VERSAO = 1;
+const OZ_VERSAO = 2;
 
 const OZ_CONFIG = {
   sitePublico: 'https://drakezera1337.github.io/ofertazera/',

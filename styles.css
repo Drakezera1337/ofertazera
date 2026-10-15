@@ -204,3 +204,6 @@ button { font: inherit; cursor: pointer; }
 .leitor video { width: 100%; border-radius: 10px; background: #000; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
 .empty .btn { margin-top: 14px; }
+.meta .canal { color: var(--purple); font-weight: 800; }
+@media (prefers-color-scheme: dark) { .meta .canal { color: #b98cff; } }
+.coupon .mais { background: var(--orange); color: #fff; border-radius: 4px; padding: 0 4px; font-size: 11px; }

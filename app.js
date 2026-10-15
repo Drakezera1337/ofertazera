@@ -163,9 +163,20 @@ function filtradas() {
     if (S.filtro === 'alertas' && !o.matched?.length) return false;
     if (S.filtro === 'cupom' && !o.coupon && !o.coupon_note) return false;
     if (S.filtro.startsWith('a:') && !o.matched?.includes(S.filtro.slice(2))) return false;
+    if (S.filtro.startsWith('c:') && o.channel !== S.filtro.slice(2)) return false;
     const texto = semAcento(`${o.title} ${o.text} ${o.store || ''}`);
     return termos.every((t) => texto.includes(t));
   });
+}
+
+// Canais com ofertas (nome guardado pelo server.py a partir do título da aba)
+function canaisConhecidos() {
+  const nomes = S.status?.nomesCanais || {};
+  const ids = [...new Set(S.ofertas.map((o) => o.channel).filter(Boolean))];
+  return ids.map((id) => [id, nomes[id] || 'canal']);
+}
+function nomeCanal(o) {
+  return canaisConhecidos().length > 1 ? (S.status?.nomesCanais || {})[o.channel] || '' : '';
 }
 
 // ---------------------------------------------------------------- cards
@@ -182,8 +193,8 @@ function card(o) {
       <p class="title">${esc(o.title)}</p>
       ${o.matched?.length ? `<div class="tags">${o.matched.map((m) => `<span class="tag">🎯 ${esc(m)}</span>`).join('')}</div>` : ''}
       ${o.price ? `<div class="price-row"><span class="price">${brl(o.price)}</span>${o.old_price ? `<span class="old">${brl(o.old_price)}</span>` : ''}${d > 0 ? `<span class="off">-${d}%</span>` : ''}</div>` : ''}
-      ${o.coupon ? `<button class="coupon" data-copy="${esc(o.coupon)}">${ICON.copy}${esc(o.coupon)}</button>` : o.coupon_note ? `<span class="coupon note">🎟️ ${esc(o.coupon_note)}</span>` : ''}
-      <div class="meta"><span class="store">${esc(o.store || 'Oferta')}</span><span>${ago(o.posted_at)}</span></div>
+      ${o.coupon ? `<button class="coupon" data-copy="${esc(o.coupon)}">${ICON.copy}${esc(o.coupon)}${(o.coupons?.length || 0) > 1 ? ` <span class="mais">+${o.coupons.length - 1}</span>` : ''}</button>` : o.coupon_note ? `<span class="coupon note">🎟️ ${esc(o.coupon_note)}</span>` : ''}
+      <div class="meta"><span class="store">${esc(o.store || 'Oferta')}${nomeCanal(o) ? ` · <span class="canal">#${esc(nomeCanal(o))}</span>` : ''}</span><span>${ago(o.posted_at)}</span></div>
     </div>
     <button class="fav-btn ${S.favoritos.has(o.id) ? 'on' : ''}" data-fav="${esc(o.id)}" aria-label="Favoritar">${ICON.heart}</button>
   </a>`;
@@ -222,6 +233,7 @@ function renderHome(soFavoritos = false) {
     <div class="chips">
       ${[['todas', 'Tudo', S.ofertas.length], ['alertas', '🎯 Meus alertas', conta((o) => o.matched?.length)], ['cupom', '🏷️ Com cupom', conta((o) => o.coupon || o.coupon_note)]]
         .map(([k, l, n]) => `<button class="chip ${S.filtro === k ? 'active' : ''}" data-filter="${k}">${l}<span class="n">${n}</span></button>`).join('')}
+      ${canaisConhecidos().length > 1 ? canaisConhecidos().map(([id, nome]) => `<button class="chip ${S.filtro === 'c:' + id ? 'active' : ''}" data-filter="c:${esc(id)}">#${esc(nome)}<span class="n">${conta((o) => o.channel === id)}</span></button>`).join('') : ''}
       ${S.alertas.alertas.filter((a) => a.ativo).map((a) => `<button class="chip ${S.filtro === 'a:' + a.nome ? 'active' : ''}" data-filter="a:${esc(a.nome)}">${esc(a.nome)}<span class="n">${conta((o) => o.matched?.includes(a.nome))}</span></button>`).join('')}
     </div>`;
   const titulo = soFavoritos ? 'Favoritos' : S.q ? `Resultados para “${esc(S.q)}”` : 'Ofertas recentes';
@@ -262,8 +274,8 @@ function renderDetail(id, resumo) {
       <h1>${esc(o.title)}</h1>
       ${o.matched?.length ? `<div class="tags">${o.matched.map((m) => `<span class="tag">🎯 ${esc(m)}</span>`).join('')}</div>` : ''}
       ${o.price ? `<div class="price-row"><span class="price">${brl(o.price)}</span>${o.old_price ? `<span class="old">${brl(o.old_price)}</span>` : ''}${d > 0 ? `<span class="off">-${d}% OFF</span>` : ''}</div>` : ''}
-      ${o.coupon ? `<div class="coupon-big"><div><small>CUPOM DE DESCONTO</small><strong>${esc(o.coupon)}</strong></div>
-        <button class="btn btn-orange btn-sm" data-copy="${esc(o.coupon)}">Copiar</button></div>` : ''}
+      ${(o.coupons?.length ? o.coupons : o.coupon ? [o.coupon] : []).map((c, i, l) => `<div class="coupon-big"><div><small>${l.length > 1 ? `CUPOM ${i + 1} DE ${l.length}` : 'CUPOM DE DESCONTO'}</small><strong>${esc(c)}</strong></div>
+        <button class="btn btn-orange btn-sm" data-copy="${esc(c)}">Copiar</button></div>`).join('')}
       ${!o.coupon && o.coupon_note ? `<div class="coupon-big"><div><small>CUPOM PARA RESGATAR</small><strong style="font-size:17px">🎟️ ${esc(o.coupon_note)}</strong></div>
         ${o.coupon_link ? `<a class="btn btn-orange btn-sm" href="${esc(o.coupon_link)}" target="_blank" rel="noopener">Resgatar</a>` : ''}</div>` : ''}
       ${o.text ? `<div class="msg">${linkify(o.text)}</div>` : ''}
@@ -503,6 +515,7 @@ function blocoMonitor() {
     <h2>Status do monitor</h2>
     <p>${on ? `🟢 <b>Monitorando</b> o Discord${st?.canal ? ` (${esc(st.canal)})` : ''}. Último sinal ${ago(st.ultimoSinal)}.`
       : `🔴 <b>Parado</b>: abra o canal no Chrome do PC com a extensão Ofertazera ativa.${st?.ultimoSinal ? ` Último sinal ${ago(st.ultimoSinal)}.` : ''}`}
+    ${st?.canais?.length ? '<br>' + st.canais.map((c) => `${c.ativo ? '🟢' : '🔴'} #${esc(c.nome)} <span style="opacity:.7">(${c.ativo ? 'ao vivo' : 'parado, ' + ago(c.ultimoSinal)})</span>`).join('<br>') : ''}
     ${!NO_PC && S.publicadoEm ? `<br>Dados do PC de ${ago(S.publicadoEm)}.` : ''}
     <br>${NO_PC && st?.total != null ? st.total : S.ofertas.length} ofertas ${NO_PC ? 'capturadas' : 'recentes'}.</p>
   </div>`;

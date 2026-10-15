@@ -1,16 +1,17 @@
 // Ofertazera - lê as mensagens que aparecem na tela do canal monitorado.
 // Não usa token nem API do Discord: apenas observa a página que você já tem aberta.
 (() => {
-  const DEFAULTS = { server: "http://localhost:8787", channels: "848739551295176765" };
-  let watched = new Set(DEFAULTS.channels.split(/[\s,]+/));
+  // Canais monitorados sempre (os do popup somam a estes). Cada um precisa estar aberto numa aba.
+  const CANAIS_PADRAO = ["848739551295176765", "772928307251118100", "1087857136136093736"];
+  const DEFAULTS = { server: "http://localhost:8787", channels: CANAIS_PADRAO.join(", ") };
+  const lerCanais = (txt) => new Set([...CANAIS_PADRAO, ...String(txt || "").split(/[\s,]+/).filter(Boolean)]);
+  let watched = lerCanais("");
   const sentSig = new Map(); // id -> assinatura do conteúdo já enviado
   let scanTimer = null;
 
-  chrome.storage.sync.get(DEFAULTS, (cfg) => {
-    watched = new Set(cfg.channels.split(/[\s,]+/).filter(Boolean));
-  });
+  chrome.storage.sync.get(DEFAULTS, (cfg) => { watched = lerCanais(cfg.channels); });
   chrome.storage.onChanged.addListener((ch) => {
-    if (ch.channels) watched = new Set(ch.channels.newValue.split(/[\s,]+/).filter(Boolean));
+    if (ch.channels) watched = lerCanais(ch.channels.newValue);
   });
 
   function currentChannel() {
@@ -42,9 +43,10 @@
     } catch (e) { return src; }
   }
 
+  // li#chat-messages-<canal>-<mensagem>
   function parseMessage(li, lastAuthor) {
-    const id = li.id.split("-").pop();
-    if (!/^\d{15,}$/.test(id)) return null;
+    const [, channel, id] = li.id.match(/^chat-messages-(\d+)-(\d+)$/) || [];
+    if (!id || !watched.has(channel)) return null;
     const content = li.querySelector(`[id="message-content-${id}"]`);
     const accessories = li.querySelector(`[id="message-accessories-${id}"]`);
     const authorEl = li.querySelector('[id^="message-username-"] [class*="username"], h3 [class*="username"]');
@@ -84,7 +86,7 @@
     }
 
     if (!text && !images.length) return null;
-    return { id, channel: currentChannel(), author, text, links, codes, images, timestamp: snowflakeTime(id) };
+    return { id, channel, author, text, links, codes, images, timestamp: snowflakeTime(id) };
   }
 
   function scan() {
@@ -114,11 +116,18 @@
 
   new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true, characterData: true });
 
+  // Título da aba: "Discord | #🎮 | consoles | Servidor" -> "consoles"
+  function nomeDoCanal() {
+    const partes = (document.title || "").replace(/^\(\d+\)\s*/, "").split(" | ")
+      .map((p) => p.replace(/^#/, "").trim()).filter((p) => p && p !== "Discord");
+    if (partes.length > 1) partes.pop(); // nome do servidor
+    const comLetras = partes.filter((p) => /[\p{L}\p{N}]/u.test(p));
+    return comLetras.join(" ") || partes.join(" ");
+  }
   function heartbeat() {
-    if (!currentChannel()) return;
-    const header = document.querySelector('section[class*="title"] h1, [class*="titleWrapper"] h1, h1[class*="title"]');
-    const name = (header && header.textContent.trim()) || (document.title || "").replace(/^\(\d+\)\s*/, "").replace(/\s*\|\s*Discord.*$/, "");
-    send("heartbeat", { channelName: name, url: location.href, visible: document.visibilityState });
+    const channel = currentChannel();
+    if (!channel) return;
+    send("heartbeat", { channel, channelName: nomeDoCanal(), url: location.href, visible: document.visibilityState });
   }
   setInterval(heartbeat, 30000);
   setInterval(scan, 5000); // rede de segurança caso algum evento passe
