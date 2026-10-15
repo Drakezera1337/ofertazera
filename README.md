@@ -20,7 +20,9 @@ A extensão não usa o token da conta nem a API do Discord: só lê o que já es
 
 ## Ligar no PC
 
-1. `iniciar.bat` (ou `python server.py`) e abra http://localhost:8787
+1. O servidor inicia sozinho com o Windows, **sem janela** (atalho `Ofertazera (servidor)` em `shell:startup`
+   rodando `pythonw server.py`; mensagens e erros vão para `server.log`). Para rodar com janela, use `iniciar.bat`;
+   para parar, `parar.bat`. Abra http://localhost:8787
 2. Chrome → `chrome://extensions` → **Modo do desenvolvedor** → **Carregar sem compactação** → pasta `extension`
 3. A extensão abre sozinha uma aba para cada canal monitorado, num grupo **"Ofertazera"** recolhido
    (ao abrir o Chrome e a cada minuto; reabre se uma aba fechar). O selo do topo fica **ao vivo**.

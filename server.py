@@ -978,7 +978,20 @@ class Servidor(ThreadingHTTPServer):
     daemon_threads = True
 
 
+def log_sem_janela():
+    """Com pythonw.exe (inicio automatico, sem janela) nao ha console: as mensagens vao para server.log."""
+    if sys.stdout is not None:
+        return
+    caminho = os.path.join(BASE_DIR, "server.log")
+    if os.path.exists(caminho) and os.path.getsize(caminho) > 2_000_000:
+        os.replace(caminho, caminho + ".1")  # guarda so o anterior
+    arquivo = open(caminho, "a", encoding="utf-8", buffering=1)
+    sys.stdout = sys.stderr = arquivo
+    print(f"\n--- iniciado em {time.strftime('%d/%m/%Y %H:%M:%S')} ---")
+
+
 def main():
+    log_sem_janela()
     try:
         server = Servidor(("127.0.0.1", PORT), Handler)
     except OSError:

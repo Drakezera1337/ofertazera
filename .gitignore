@@ -5,3 +5,5 @@ push_public.txt
 .vendor/
 __pycache__/
 *.tmp
+server.log
+server.log.1
