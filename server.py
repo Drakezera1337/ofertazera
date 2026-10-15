@@ -72,7 +72,7 @@ _db.executescript(
     """
 )
 for _col in ("coupon_note TEXT", "coupon_link TEXT", "final_url TEXT", "coupons TEXT",
-             "og_image TEXT", "enriquecido INTEGER DEFAULT 0"):
+             "og_image TEXT", "enriquecido INTEGER DEFAULT 0", "page_title TEXT", "page_price REAL"):
     try:
         _db.execute(f"ALTER TABLE offers ADD COLUMN {_col}")
     except sqlite3.OperationalError:
@@ -224,25 +224,43 @@ OG_IMAGE_RE = re.compile(
 SEM_FOTO_NO_HTML = ("shopee",)
 
 
+OG_TITLE_RE = re.compile(
+    r"""<meta[^>]+(?:property|name)=["'](?:og:title|twitter:title)["'][^>]*content=["']([^"']+)"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:title|twitter:title)["']""", re.I)
+PRECO_PAGINA_RE = re.compile(
+    r"""<meta[^>]+(?:itemprop=["']price["']|property=["'](?:product:price:amount|og:price:amount)["'])[^>]*content=["']([\d.,]+)"""
+    r"""|<meta[^>]+content=["']([\d.,]+)["'][^>]*(?:itemprop=["']price["']|property=["'](?:product:price:amount|og:price:amount)["'])""", re.I)
+
+
 def buscar_pagina(url):
-    """Abre o link da oferta (seguindo encurtadores como tidd.ly) e devolve (url_final, foto_do_produto)."""
+    """Abre o link da oferta (seguindo encurtadores como tidd.ly) e devolve
+    {"final": url_final, "foto": ..., "titulo": nome do produto, "preco": ...} (o que a página tiver)."""
+    vazio = {"final": None, "foto": None, "titulo": None, "preco": None}
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=NAVEGADOR), timeout=8) as r:
             final = r.geturl()
             if any(s in (urllib.parse.urlparse(final).hostname or "") for s in SEM_FOTO_NO_HTML):
-                return final, None
+                return {**vazio, "final": final}
             pagina = r.read(800_000).decode("utf-8", "ignore")
     except urllib.error.HTTPError as e:  # 403/405: ainda assim pode ter a url final
-        return (e.url if e.url and e.url != url else None), None
+        return {**vazio, "final": e.url if e.url and e.url != url else None}
     except Exception:  # noqa: BLE001
-        return None, None
+        return vazio
     m = OG_IMAGE_RE.search(pagina)
     foto = html.unescape(m.group(1) or m.group(2)).strip() if m else None
     if foto and foto.startswith("//"):
         foto = "https:" + foto
     elif foto and foto.startswith("/"):
         foto = urllib.parse.urljoin(final, foto)
-    return final, (foto if foto and foto.startswith("http") else None)
+    m = OG_TITLE_RE.search(pagina)
+    titulo = html.unescape(m.group(1) or m.group(2)).strip() if m else None
+    if titulo:  # "Placa ... | Mercado Livre" / "Placa ... - KaBuM!" -> só o produto
+        titulo = re.split(r"\s+[|–-]\s+(?=[^|–-]*(?:mercado livre|kabum|amazon|magalu|magazine|shopee|pichau|terabyte)[^|–-]*$)",
+                          titulo, flags=re.I)[0].strip()[:140]
+    m = PRECO_PAGINA_RE.search(pagina)
+    preco = parse_brl(m.group(1) or m.group(2)) if m else None
+    return {"final": final, "foto": foto if foto and foto.startswith("http") else None,
+            "titulo": titulo or None, "preco": preco if preco and preco >= 1 else None}
 
 
 def imagem_original(url):
@@ -335,6 +353,10 @@ def parse_offer(msg):
     # "5% OFF acima de R$ 79, limite R$ 30: TORCEDOR10" -> codigo no fim da linha, depois de ":"
     candidatos += [m.group(1) for m in re.finditer(r":\s*[`*_\"']*([A-Z][A-Z0-9_\-]{3,24})[`*_\"']*\s*$", text, re.M)]
     candidatos += [c for c in codes if not c.startswith("http")]
+    # Mensagem que é só o código ("100FFN4SH0", "MER3C3M"): cupom postado sozinho
+    so_codigo = re.fullmatch(r"\s*([A-Z0-9][A-Z0-9_\-]{4,24})\s*", text or "")
+    if so_codigo and re.search(r"[A-Z]", so_codigo.group(1)) and re.search(r"\d", so_codigo.group(1)):
+        candidatos.append(so_codigo.group(1))
     for c in candidatos:
         if codigo_ok(c) and c not in coupons:
             coupons.append(c)
@@ -357,7 +379,7 @@ def parse_offer(msg):
         if i and i not in images:
             images.append(i)
     return {
-        "title": make_title(text),
+        "title": ("Cupom " + so_codigo.group(1)) if so_codigo and coupon == so_codigo.group(1) else make_title(text),
         "price": price,
         "old_price": old_price,
         "coupon": coupon,
@@ -450,6 +472,16 @@ STATE = {"last_heartbeat": 0, "canais": {}, "last_ingest": 0}
 _poll_cond = threading.Condition()
 
 
+def e_oferta(parsed):
+    """Oferta tem pelo menos um link de loja, um preço ou um cupom; o resto é conversa do canal."""
+    return bool(parsed.get("link") or parsed.get("price") or parsed.get("coupon") or parsed.get("coupon_note"))
+
+
+def titulo_fraco(t):
+    """Título que não diz qual é o produto (ex.: só sobrou "de vídeo" da menção @Placa de vídeo)."""
+    return len(re.findall(r"[A-Za-zÀ-ÿ]{3,}|\d{3,}", t or "")) < 3
+
+
 def offer_row_to_json(r):
     r = dict(r)
     r["links"] = json.loads(r.get("links") or "[]")
@@ -469,6 +501,11 @@ def ingest(msg):
     if not text and not msg.get("images"):
         return None
     parsed = parse_offer(msg)
+    if not e_oferta(parsed):
+        # conversa do canal ("Ave", foto sem link...): não é oferta
+        db_exec("DELETE FROM offers WHERE id=?", (mid,))
+        db_exec("DELETE FROM historico_precos WHERE offer_id=?", (mid,))
+        return None
     now = int(time.time() * 1000)
     posted = msg.get("timestamp")
     try:
@@ -511,9 +548,15 @@ def ingest(msg):
 
 def save_parsed(mid, text, parsed, matched, overwrite_store=False):
     # A foto da página da loja (não expira) fica na frente das fotos do Discord
-    og = (db_one("SELECT og_image FROM offers WHERE id=?", (mid,)) or {}).get("og_image")
+    pag = db_one("SELECT og_image, page_title, page_price FROM offers WHERE id=?", (mid,)) or {}
+    og = pag.get("og_image")
     if og:
         parsed = {**parsed, "image": og, "images": [og] + [i for i in parsed["images"] if i != og]}
+    # Post sem nome do produto ou sem preço: vale o que a página da loja informou
+    if pag.get("page_title") and titulo_fraco(parsed["title"]):
+        parsed = {**parsed, "title": pag["page_title"]}
+    if pag.get("page_price") and not parsed["price"]:
+        parsed = {**parsed, "price": pag["page_price"]}
     store_sql = "store=?" if overwrite_store else "store=COALESCE(?, store)"
     db_exec(
         f"""UPDATE offers SET text=?, title=?, price=?, old_price=?, coupon=?, coupons=?, coupon_note=?, link=?,
@@ -685,24 +728,32 @@ def enfileirar_foto(mid, link, prioridade=1):
 
 
 def enriquecer(mid, link):
-    final, foto = buscar_pagina(link)
-    if not foto and final and not any(s in final for s in SEM_FOTO_NO_HTML):
+    pag = buscar_pagina(link)
+    final = pag["final"]
+    if not pag["foto"] and final and not any(s in final for s in SEM_FOTO_NO_HTML):
         time.sleep(2)  # falha momentânea da loja (acontece na KaBuM): tenta mais uma vez
-        _, foto = buscar_pagina(final)  # direto na página final (sem passar pelo encurtador de novo)
+        de_novo = buscar_pagina(final)  # direto na página final (sem passar pelo encurtador de novo)
+        pag = {**de_novo, "final": final} if de_novo["foto"] or de_novo["titulo"] else pag
+    foto = pag["foto"]
     store = detect_store([final]) if final else None
-    row = db_one("SELECT images, store FROM offers WHERE id=?", (mid,))
+    row = db_one("SELECT images, store, title, price FROM offers WHERE id=?", (mid,))
     if not row:
         return
     imagens = json.loads(row["images"] or "[]")
     if foto:
         imagens = [foto] + [i for i in imagens if i != foto]
+    # Post sem nome do produto ("de vídeo") ou sem preço: usa o que a página da loja informa
+    titulo = pag["titulo"] if pag["titulo"] and titulo_fraco(row["title"]) else row["title"]
+    preco = row["price"] if row["price"] else pag["preco"]
     db_exec("""UPDATE offers SET final_url=?, og_image=?, enriquecido=1, store=COALESCE(store, ?),
-               image=COALESCE(?, image), images=? WHERE id=?""",
-            (final or "", foto, store, foto, json.dumps(imagens), mid))
+               image=COALESCE(?, image), images=?, page_title=?, page_price=?, title=?, price=? WHERE id=?""",
+            (final or "", foto, store, foto, json.dumps(imagens), pag["titulo"] or "", pag["preco"],
+             titulo, preco, mid))
     registrar_preco(mid)  # com o link final dá para reconhecer o produto pelo código da loja
-    if foto or (store and not row["store"]):
+    if foto or (store and not row["store"]) or titulo != row["title"] or preco != row["price"]:
         avisar_mudanca()
-    print(f"[foto] {'ok ' if foto else '-- '} {(store or row['store'] or '?'):14} {(final or link)[:70]}")
+    print(f"[foto] {'ok ' if foto else '-- '} {(store or row['store'] or '?'):14} {(final or link)[:60]}"
+          + (f" | nome: {titulo[:40]}" if titulo != row["title"] else ""))
 
 
 def trabalhador_fotos():
@@ -717,11 +768,20 @@ def trabalhador_fotos():
 
 def reparse_all():
     """Reaplica o parser atual em todas as ofertas salvas (ao iniciar)."""
-    rows = db_all("SELECT id, text, links, images, store, link, final_url, enriquecido FROM offers ORDER BY posted_at DESC")
+    rows = db_all("SELECT id, text, links, images, store, link, final_url, enriquecido, page_title FROM offers ORDER BY posted_at DESC")
+    removidas = 0
     for r in rows:
         msg = {"text": r["text"], "links": json.loads(r["links"] or "[]"),
                "images": json.loads(r["images"] or "[]")}
         parsed = parse_offer(msg)
+        if not e_oferta(parsed):  # conversa do canal que entrou antes desta regra
+            db_exec("DELETE FROM offers WHERE id=?", (r["id"],))
+            db_exec("DELETE FROM historico_precos WHERE offer_id=?", (r["id"],))
+            removidas += 1
+            continue
+        if titulo_fraco(parsed["title"]) and parsed["link"] and r["enriquecido"] and r["page_title"] is None:
+            db_exec("UPDATE offers SET enriquecido=0 WHERE id=?", (r["id"],))  # busca o nome na loja
+            r = {**r, "enriquecido": 0}
         if r["final_url"] and not parsed["store"]:
             parsed["store"] = detect_store([r["final_url"]])
         save_parsed(r["id"], r["text"], parsed, find_matches({"id": r["id"], "text": r["text"], **parsed}),
@@ -729,7 +789,7 @@ def reparse_all():
         if parsed["link"] and not r["enriquecido"]:
             enfileirar_foto(r["id"], parsed["link"], prioridade=1)
     if rows:
-        print(f"[parser] {len(rows)} ofertas reprocessadas")
+        print(f"[parser] {len(rows)} ofertas reprocessadas" + (f", {removidas} conversas removidas" if removidas else ""))
 
 
 def _notify_later(mid):
