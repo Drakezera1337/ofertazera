@@ -76,19 +76,48 @@
 
     const codes = content ? [...content.querySelectorAll("code")].map((c) => c.textContent.trim()) : [];
 
-    const images = [];
-    if (accessories) {
-      accessories.querySelectorAll("img").forEach((img) => {
-        const cls = (img.className || "") + " " + (img.parentElement?.className || "");
-        if (BAD_IMG.test(cls) || !img.src || img.src.startsWith("data:")) return;
-        if ((img.naturalWidth && img.naturalWidth < 48) || img.width && img.width < 40) return;
-        const src = fullImage(img.src);
-        if (!images.includes(src)) images.push(src);
-      });
-    }
+    const images = coletarImagens(accessories || li);
+    // Tem anexo/prévia mas nenhuma imagem achada: manda um resumo da estrutura para o server.log
+    const diag = !images.length && accessories && accessories.childElementCount ? esqueleto(accessories) : undefined;
 
     if (!text && !images.length) return null;
-    return { id, channel, author, text, links, codes, images, timestamp: snowflakeTime(id) };
+    return { id, channel, author, text, links, codes, images, diag, timestamp: snowflakeTime(id) };
+  }
+
+  // Imagens do anexo/prévia: <img>, capa de vídeo/GIF, link direto de imagem e imagem de fundo.
+  // Não descarta imagem ainda não carregada (as abas ficam no grupo recolhido, fora da tela).
+  function coletarImagens(root) {
+    const urls = [];
+    const add = (u) => {
+      if (!u || !/^https?:/.test(u) || /\/emojis\/|\/avatars\/|\/stickers\//.test(u)) return;
+      const f = fullImage(u);
+      if (!urls.includes(f)) urls.push(f);
+    };
+    root.querySelectorAll("img").forEach((img) => {
+      const cls = (img.className || "") + " " + (img.parentElement?.className || "");
+      if (BAD_IMG.test(cls) || img.closest('[class*="avatar"], [class*="reactions"], [class*="repliedMessage"]')) return;
+      if (img.complete && img.naturalWidth && img.naturalWidth < 48) return; // ícone pequeno
+      add(img.currentSrc || img.src || img.dataset.src);
+    });
+    root.querySelectorAll("video").forEach((v) => add(v.poster || v.querySelector("source")?.src));
+    root.querySelectorAll("a[href]").forEach((a) => {
+      if (/\.(png|jpe?g|webp|gif)(\?|$)/i.test(a.href) || /(media|images-ext-\d)\.discordapp\.net|cdn\.discordapp\.com\/attachments/.test(a.href)) add(a.href);
+    });
+    root.querySelectorAll('[style*="background-image"]').forEach((el) => {
+      add((el.style.backgroundImage.match(/url\(["']?([^"')]+)/) || [])[1]);
+    });
+    return urls;
+  }
+
+  // Resumo da estrutura (tags, classes e hosts das URLs) para descobrir onde o Discord pôs a imagem
+  function esqueleto(el, nivel = 0) {
+    if (nivel > 7) return "";
+    const cls = String(el.className || "").split(/\s+/).filter(Boolean).map((c) => c.split("_")[0]).slice(0, 2).join(".");
+    const url = el.getAttribute("src") || el.getAttribute("href") || el.getAttribute("poster") || "";
+    let s = `${el.tagName.toLowerCase()}${cls ? "." + cls : ""}${url ? `[${url.slice(0, 60)}]` : ""}`;
+    const filhos = [...el.children].slice(0, 6).map((c) => esqueleto(c, nivel + 1)).filter(Boolean);
+    if (filhos.length) s += `{${filhos.join(" ")}}`;
+    return s.slice(0, 1500);
   }
 
   function scan() {

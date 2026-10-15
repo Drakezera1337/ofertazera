@@ -526,6 +526,7 @@ def save_parsed(mid, text, parsed, matched, overwrite_store=False):
 # Fila única que abre os links das ofertas (uma página por vez): descobre a loja dos encurtadores
 # e pega a foto do produto. Ofertas novas (prioridade 0) passam na frente das antigas (1).
 _fila_fotos = queue.PriorityQueue()
+_diag_vistos = set()
 _contador_fila = iter(range(10**12))
 
 
@@ -1006,6 +1007,11 @@ class Handler(SimpleHTTPRequestHandler):
         body = self._body()
         if path == "/api/ingest":
             msgs = body.get("messages") or ([body] if body.get("id") else [])
+            for m in msgs:
+                # mensagem com anexo/prévia em que a extensão não achou imagem: registra a estrutura
+                if m.get("diag") and m.get("id") not in _diag_vistos:
+                    _diag_vistos.add(m.get("id"))
+                    print(f"[diag-imagem] {m.get('id')} {str(m.get('text') or '')[:40]!r}: {str(m['diag'])[:1500]}")
             n = sum(1 for m in msgs if ingest(m))
             return self._json({"ok": True, "processed": n})
         if path == "/api/heartbeat":
