@@ -35,7 +35,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       if (msg.type === "ingest") stats.sent += msg.payload.messages.length;
       stats.lastOk = Date.now(); stats.lastError = "";
-      reply({ ok: true });
+      reply({ ok: true, ...(await r.json().catch(() => ({}))) });
     } catch (e) {
       stats.lastError = String(e.message || e);
       reply({ ok: false, error: stats.lastError });

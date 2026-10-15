@@ -266,7 +266,9 @@ def clean_line(line):
 
 def make_title(text):
     for raw in (text or "").splitlines():
-        if raw.strip().startswith("@"):  # mencao de cargo (@Video-Game, @Placa de video)
+        # linha com mencao de cargo ("@Video-Game", "KABUM @Placa de vídeo"): o modelo costuma vir
+        # na linha de baixo; essa linha so vira titulo se nao houver outra
+        if "@" in raw:
             continue
         line = clean_line(raw)
         if len(line) < 4:
@@ -1241,7 +1243,8 @@ class Handler(SimpleHTTPRequestHandler):
                 _publicar.set()
                 enviar_push({"title": f"✅ Voltou a monitorar: {nomes.get(cid) or 'canal'}", "body": "Tudo certo de novo.",
                              "tag": "ofertazera-monitor-" + cid})
-            return self._json({"ok": True})
+            # avisa a aba que há um buraco a recuperar (ela rola o Discord sem precisar reabrir)
+            return self._json({"ok": True, "recuperar": bool(get_setting("quebra_" + cid))})
         if path == "/api/recuperado":
             # a extensão terminou de rolar o histórico até o ponto da quebra
             canal = str(body.get("channel") or "")
@@ -1272,6 +1275,12 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 class Servidor(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        # Conexão fechada pelo navegador/extensão no meio da resposta: normal, não polui o log
+        if isinstance(sys.exc_info()[1], (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+            return
+        super().handle_error(request, client_address)
+
     # No Windows, SO_REUSEADDR deixaria um segundo server.py escutar a mesma porta junto com o primeiro
     allow_reuse_address = sys.platform != "win32"
     daemon_threads = True

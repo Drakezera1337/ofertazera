@@ -159,7 +159,11 @@
   function heartbeat() {
     const channel = currentChannel();
     if (!channel) return;
-    send("heartbeat", { channel, channelName: nomeDoCanal(), url: location.href, visible: document.visibilityState });
+    pedir("heartbeat", { channel, channelName: nomeDoCanal(), url: location.href, visible: document.visibilityState })
+      .then((r) => {
+        // servidor ficou fora: recupera o buraco (no máximo uma tentativa a cada 10 min)
+        if (r && r.recuperar && Date.now() - ultimaTentativa > 10 * 60_000) recuperarPerdidas();
+      });
   }
   // ------------------------------------------------------------ mensagens perdidas (PC desligado)
   // Ao abrir o canal, o Discord só mostra as mensagens mais recentes. Se o servidor ainda não tem
@@ -176,10 +180,12 @@
   const rolagem = () => document.querySelector('[data-list-id="chat-messages"]')?.closest('[class*="scroller"]');
 
   let recuperando = false;
+  let ultimaTentativa = 0;
   async function recuperarPerdidas() {
     const canal = currentChannel();
     if (!canal || recuperando) return;
     recuperando = true;
+    ultimaTentativa = Date.now();
     let rolou = false;
     try {
       // "antes desta página abrir": as mensagens que a página acabou de mandar não contam
