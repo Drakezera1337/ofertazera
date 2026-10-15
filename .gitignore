@@ -1,0 +1,7 @@
+# Dados e segredos do PC (nunca vão para o GitHub)
+ofertazera.db
+push_vapid.pem
+push_public.txt
+.vendor/
+__pycache__/
+*.tmp

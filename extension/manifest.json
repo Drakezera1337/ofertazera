@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Ofertazera - Monitor do Discord",
+  "version": "1.0.0",
+  "description": "Lê as ofertas do canal aberto no Discord e envia para o seu app Ofertazera.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://discord.com/*", "https://*.discord.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_popup": "popup.html", "default_title": "Ofertazera" },
+  "icons": { "128": "icon128.png" }
+}
