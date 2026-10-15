@@ -13,6 +13,10 @@
     button { background: #6e0ad6; color: #fff; border: 0; border-radius: 6px; padding: 9px; font-weight: 800; cursor: pointer; }
     .st { background: #f5f5f7; border-radius: 6px; padding: 8px 10px; line-height: 1.5; }
     a { color: #6e0ad6; font-weight: 700; }
+    .chk { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; color: #1a1a1a; font-size: 13px; }
+    .chk input { width: auto; margin-top: 2px; }
+    .chk small { display: block; color: #777; font-weight: 400; }
+    .sec { background: transparent; color: #6e0ad6; border: 1.5px solid #6e0ad6; }
   </style>
 </head>
 <body>
@@ -20,8 +24,10 @@
   <main>
     <div class="st" id="st">Carregando…</div>
     <div><label>Endereço do servidor</label><input id="server"></div>
-    <div><label>IDs dos canais monitorados (vírgula)</label><textarea id="channels"></textarea></div>
+    <label class="chk"><input type="checkbox" id="abrirAbas"><span>Abrir os canais sozinho<small>Mantém uma aba por canal num grupo “Ofertazera” recolhido.</small></span></label>
+    <div><label>Canais monitorados (ID ou link, separados por vírgula)</label><textarea id="channels"></textarea></div>
     <button id="save">Salvar</button>
+    <button id="abrir" class="sec">Abrir/conferir as abas agora</button>
     <a id="open" href="#" target="_blank">Abrir o app ↗</a>
   </main>
   <script src="popup.js"></script>

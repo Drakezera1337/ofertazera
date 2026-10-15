@@ -22,7 +22,9 @@ A extensão não usa o token da conta nem a API do Discord: só lê o que já es
 
 1. `iniciar.bat` (ou `python server.py`) e abra http://localhost:8787
 2. Chrome → `chrome://extensions` → **Modo do desenvolvedor** → **Carregar sem compactação** → pasta `extension`
-3. Abra o canal no Discord **pelo Chrome** e dê F5. O selo do topo fica **ao vivo**.
+3. A extensão abre sozinha uma aba para cada canal monitorado, num grupo **"Ofertazera"** recolhido
+   (ao abrir o Chrome e a cada minuto; reabre se uma aba fechar). O selo do topo fica **ao vivo**.
+   Para desligar: ícone da extensão → desmarque **Abrir os canais sozinho**.
 4. Ajustes → **Celular** → cole um token do GitHub com permissão **gist** → **Conectar**
 
 Para não perder ofertas: deixe o Discord numa janela própria do Chrome; em `chrome://settings/performance`

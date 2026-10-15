@@ -4,7 +4,9 @@
   // Canais monitorados sempre (os do popup somam a estes). Cada um precisa estar aberto numa aba.
   const CANAIS_PADRAO = ["848739551295176765", "772928307251118100", "1087857136136093736"];
   const DEFAULTS = { server: "http://localhost:8787", channels: CANAIS_PADRAO.join(", ") };
-  const lerCanais = (txt) => new Set([...CANAIS_PADRAO, ...String(txt || "").split(/[\s,]+/).filter(Boolean)]);
+  // Aceita o ID do canal ou o link inteiro (https://discord.com/channels/<servidor>/<canal>)
+  const lerCanais = (txt) => new Set([...CANAIS_PADRAO, ...String(txt || "").split(/[\s,]+/)
+    .map((item) => (item.match(/(\d{15,})\/?$/) || [])[1]).filter(Boolean)]);
   let watched = lerCanais("");
   const sentSig = new Map(); // id -> assinatura do conteúdo já enviado
   let scanTimer = null;
