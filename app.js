@@ -179,6 +179,14 @@ function nomeCanal(o) {
   return canaisConhecidos().length > 1 ? (S.status?.nomesCanais || {})[o.channel] || '' : '';
 }
 
+// Foto que não abre (ex.: link do Discord expirado): tenta a próxima da oferta; sem nenhuma, fica o ícone
+function fotoFalhou(img) {
+  const alts = (img.dataset.alts || '').split(' ').filter(Boolean);
+  if (!alts.length) { img.remove(); return; }
+  img.dataset.alts = alts.slice(1).join(' ');
+  img.src = alts[0];
+}
+
 // ---------------------------------------------------------------- cards
 function card(o) {
   const d = discount(o);
@@ -186,7 +194,7 @@ function card(o) {
   return `
   <a class="card ${o.matched?.length ? 'match' : ''} ${novo ? 'card-new' : ''}" href="#/oferta/${esc(o.id)}">
     <div class="thumb">
-      ${o.image ? `<img src="${esc(o.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">` : ICON.img}
+      ${ICON.img}${o.image ? `<img src="${esc(o.image)}" alt="" loading="lazy" referrerpolicy="no-referrer" data-alts="${esc((o.images || []).filter((i) => i !== o.image).join(' '))}" onerror="fotoFalhou(this)">` : ''}
       ${isNew(o) ? '<span class="badge-new">NOVO</span>' : ''}
     </div>
     <div class="info">

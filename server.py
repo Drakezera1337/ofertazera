@@ -9,8 +9,10 @@ e envia notificacoes Web Push (VAPID) na hora em que uma oferta bate com seus al
 
 Rode:  python server.py   (pywebpush fica em .vendor/, a chave privada em push_vapid.pem)
 """
+import html
 import json
 import os
+import queue
 import re
 import sqlite3
 import sys
@@ -69,7 +71,8 @@ _db.executescript(
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
     """
 )
-for _col in ("coupon_note TEXT", "coupon_link TEXT", "final_url TEXT", "coupons TEXT"):
+for _col in ("coupon_note TEXT", "coupon_link TEXT", "final_url TEXT", "coupons TEXT",
+             "og_image TEXT", "enriquecido INTEGER DEFAULT 0"):
     try:
         _db.execute(f"ALTER TABLE offers ADD COLUMN {_col}")
     except sqlite3.OperationalError:
@@ -209,20 +212,47 @@ def detect_store(urls):
     return None
 
 
-def resolve_final_url(url):
-    """Segue os redirecionamentos de um link encurtado (tidd.ly etc) para descobrir a loja."""
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130 Safari/537.36"}
-    for method in ("HEAD", "GET"):
-        try:
-            req = urllib.request.Request(url, method=method, headers=headers)
-            with urllib.request.urlopen(req, timeout=6) as r:
-                return r.geturl()
-        except urllib.error.HTTPError as e:  # 405 etc.: ainda assim pode ter a url final
-            if e.url and e.url != url:
-                return e.url
-        except Exception:  # noqa: BLE001
-            pass
-    return None
+NAVEGADOR = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept": "text/html,application/xhtml+xml",
+}
+OG_IMAGE_RE = re.compile(
+    r"""<meta[^>]+(?:property|name)=["'](?:og:image(?::secure_url)?|twitter:image)["'][^>]*content=["']([^"']+)"""
+    r"""|<meta[^>]+content=["']([^"']+)["'][^>]*(?:property|name)=["'](?:og:image|twitter:image)["']""", re.I)
+# Lojas cuja pagina nao traz a foto no HTML (montada por JavaScript): nem tenta
+SEM_FOTO_NO_HTML = ("shopee",)
+
+
+def buscar_pagina(url):
+    """Abre o link da oferta (seguindo encurtadores como tidd.ly) e devolve (url_final, foto_do_produto)."""
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=NAVEGADOR), timeout=8) as r:
+            final = r.geturl()
+            if any(s in (urllib.parse.urlparse(final).hostname or "") for s in SEM_FOTO_NO_HTML):
+                return final, None
+            pagina = r.read(800_000).decode("utf-8", "ignore")
+    except urllib.error.HTTPError as e:  # 403/405: ainda assim pode ter a url final
+        return (e.url if e.url and e.url != url else None), None
+    except Exception:  # noqa: BLE001
+        return None, None
+    m = OG_IMAGE_RE.search(pagina)
+    foto = html.unescape(m.group(1) or m.group(2)).strip() if m else None
+    if foto and foto.startswith("//"):
+        foto = "https:" + foto
+    elif foto and foto.startswith("/"):
+        foto = urllib.parse.urljoin(final, foto)
+    return final, (foto if foto and foto.startswith("http") else None)
+
+
+def imagem_original(url):
+    """Prévia do Discord (images-ext-N.discordapp.net/external/<hash>/https/host/arquivo) -> link original.
+    O link do proxy do Discord expira; o original (ex.: servidor de imagens da Shopee) não."""
+    m = re.match(r"https?://images-ext-\d+\.discordapp\.net/external/[^/]+/(https?)/(.+)", url or "")
+    if not m:
+        return url
+    caminho = urllib.parse.unquote(m.group(2).split("?", 1)[0])
+    return f"{m.group(1)}://{caminho}"
 
 
 def clean_line(line):
@@ -319,7 +349,11 @@ def parse_offer(msg):
         elif re.search(r"cupo(?:m|ns)", text, re.I) and not re.search(r"sem\s+cupom", text, re.I):
             coupon_note = "Cupons na página"
 
-    images = [i for i in msg.get("images") or [] if i]
+    images = []
+    for i in msg.get("images") or []:
+        i = imagem_original(i)
+        if i and i not in images:
+            images.append(i)
     return {
         "title": make_title(text),
         "price": price,
@@ -457,14 +491,15 @@ def ingest(msg):
         is_new = True
     STATE["last_ingest"] = now
     row = db_one("SELECT * FROM offers WHERE id=?", (mid,))
-    if not row["store"] and row["link"] and not row["final_url"]:
-        threading.Thread(target=resolve_store, args=(mid, row["link"]), daemon=True).start()
+    if row["link"] and not row["enriquecido"]:
+        enfileirar_foto(mid, row["link"], prioridade=0)
     # Notifica so mensagens recentes (nao o historico carregado ao abrir o canal)
     fresh = (now - posted) < 10 * 60 * 1000
     should = matched or get_setting("notify_all") == "1"
     if fresh and should and not row["notified"]:
-        # Espera ~2s quando ainda nao ha imagem/link: o embed costuma chegar logo depois
-        delay = 0 if (parsed["image"] and parsed["link"]) else 2.5
+        # Sem imagem/link ainda: espera 1 s (a prévia do Discord costuma chegar logo depois);
+        # _notify_later ainda espera até ~2 s pela foto da página da loja
+        delay = 0 if (parsed["image"] and parsed["link"]) else 1.0
         threading.Timer(delay, _notify_later, args=(mid,)).start()
     avisar_mudanca()
     print(f"[{'novo' if is_new else 'upd '}] {parsed['title'][:70]} | {fmt_brl(parsed['price'])} "
@@ -473,6 +508,10 @@ def ingest(msg):
 
 
 def save_parsed(mid, text, parsed, matched, overwrite_store=False):
+    # A foto da página da loja (não expira) fica na frente das fotos do Discord
+    og = (db_one("SELECT og_image FROM offers WHERE id=?", (mid,)) or {}).get("og_image")
+    if og:
+        parsed = {**parsed, "image": og, "images": [og] + [i for i in parsed["images"] if i != og]}
     store_sql = "store=?" if overwrite_store else "store=COALESCE(?, store)"
     db_exec(
         f"""UPDATE offers SET text=?, title=?, price=?, old_price=?, coupon=?, coupons=?, coupon_note=?, link=?,
@@ -484,17 +523,49 @@ def save_parsed(mid, text, parsed, matched, overwrite_store=False):
     )
 
 
-def resolve_store(mid, link):
-    final = resolve_final_url(link)
+# Fila única que abre os links das ofertas (uma página por vez): descobre a loja dos encurtadores
+# e pega a foto do produto. Ofertas novas (prioridade 0) passam na frente das antigas (1).
+_fila_fotos = queue.PriorityQueue()
+_contador_fila = iter(range(10**12))
+
+
+def enfileirar_foto(mid, link, prioridade=1):
+    _fila_fotos.put((prioridade, next(_contador_fila), mid, link))
+
+
+def enriquecer(mid, link):
+    final, foto = buscar_pagina(link)
+    if not foto and final and not any(s in final for s in SEM_FOTO_NO_HTML):
+        time.sleep(2)  # falha momentânea da loja (acontece na KaBuM): tenta mais uma vez
+        _, foto = buscar_pagina(final)  # direto na página final (sem passar pelo encurtador de novo)
     store = detect_store([final]) if final else None
-    db_exec("UPDATE offers SET final_url=?, store=COALESCE(?, store) WHERE id=?", (final or "", store, mid))
-    if store:
+    row = db_one("SELECT images, store FROM offers WHERE id=?", (mid,))
+    if not row:
+        return
+    imagens = json.loads(row["images"] or "[]")
+    if foto:
+        imagens = [foto] + [i for i in imagens if i != foto]
+    db_exec("""UPDATE offers SET final_url=?, og_image=?, enriquecido=1, store=COALESCE(store, ?),
+               image=COALESCE(?, image), images=? WHERE id=?""",
+            (final or "", foto, store, foto, json.dumps(imagens), mid))
+    if foto or (store and not row["store"]):
         avisar_mudanca()
+    print(f"[foto] {'ok ' if foto else '-- '} {(store or row['store'] or '?'):14} {(final or link)[:70]}")
+
+
+def trabalhador_fotos():
+    while True:
+        _, _, mid, link = _fila_fotos.get()
+        try:
+            enriquecer(mid, link)
+        except Exception as exc:  # noqa: BLE001 - uma pagina com problema nao para a fila
+            print(f"[foto] erro em {link[:60]}: {exc}")
+            db_exec("UPDATE offers SET enriquecido=1 WHERE id=?", (mid,))
 
 
 def reparse_all():
     """Reaplica o parser atual em todas as ofertas salvas (ao iniciar)."""
-    rows = db_all("SELECT id, text, links, images, store, link, final_url FROM offers")
+    rows = db_all("SELECT id, text, links, images, store, link, final_url, enriquecido FROM offers ORDER BY posted_at DESC")
     for r in rows:
         msg = {"text": r["text"], "links": json.loads(r["links"] or "[]"),
                "images": json.loads(r["images"] or "[]")}
@@ -503,13 +574,19 @@ def reparse_all():
             parsed["store"] = detect_store([r["final_url"]])
         save_parsed(r["id"], r["text"], parsed, find_matches({"id": r["id"], "text": r["text"], **parsed}),
                     overwrite_store=True)
-        if not parsed["store"] and parsed["link"] and not r["final_url"]:
-            threading.Thread(target=resolve_store, args=(r["id"], parsed["link"]), daemon=True).start()
+        if parsed["link"] and not r["enriquecido"]:
+            enfileirar_foto(r["id"], parsed["link"], prioridade=1)
     if rows:
         print(f"[parser] {len(rows)} ofertas reprocessadas")
 
 
 def _notify_later(mid):
+    # Sem foto ainda: espera até ~2 s a busca na página da loja, para a notificação já sair com foto
+    for _ in range(8):
+        row = db_one("SELECT image, enriquecido, link FROM offers WHERE id=?", (mid,))
+        if not row or row["image"] or row["enriquecido"] or not row["link"]:
+            break
+        time.sleep(0.25)
     row = db_one("SELECT * FROM offers WHERE id=?", (mid,))
     if row and not row["notified"]:
         db_exec("UPDATE offers SET notified=1 WHERE id=?", (mid,))  # evita duplicar
@@ -997,6 +1074,7 @@ def main():
     except OSError:
         print(f"O Ofertazera já está rodando (porta {PORT} ocupada).")
         return
+    threading.Thread(target=trabalhador_fotos, daemon=True).start()
     reparse_all()
     threading.Thread(target=watchdog, daemon=True).start()
     threading.Thread(target=laco_gist, daemon=True).start()
