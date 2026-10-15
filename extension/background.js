@@ -12,10 +12,20 @@ const stats = { sent: 0, lastOk: 0, lastError: "" };
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   if (msg.type === "getStats") { reply(stats); return; }
   if (msg.type === "conferirAbas") { conferirAbas().then(() => reply({ ok: true })); return true; }
-  if (msg.type !== "ingest" && msg.type !== "heartbeat") return;
+  if (msg.type === "ultima") {
+    // última mensagem que o servidor já tem deste canal (para recuperar as do período desligado)
+    chrome.storage.sync.get(DEFAULTS).then((cfg) =>
+      fetch(cfg.server.replace(/\/$/, "") + "/api/ultima?canal=" + encodeURIComponent(msg.payload.channel)
+        + "&antesDe=" + encodeURIComponent(msg.payload.antesDe || ""))
+        .then((r) => r.json()).then((j) => reply({ ok: true, ultima: j.ultima }))
+        .catch(() => reply({ ok: false })));
+    return true;
+  }
+  const rotas = { ingest: "/api/ingest", heartbeat: "/api/heartbeat", recuperado: "/api/recuperado" };
+  if (!rotas[msg.type]) return;
   (async () => {
     const cfg = await chrome.storage.sync.get(DEFAULTS);
-    const url = cfg.server.replace(/\/$/, "") + (msg.type === "ingest" ? "/api/ingest" : "/api/heartbeat");
+    const url = cfg.server.replace(/\/$/, "") + rotas[msg.type];
     try {
       const r = await fetch(url, {
         method: "POST",

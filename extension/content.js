@@ -161,7 +161,75 @@
     if (!channel) return;
     send("heartbeat", { channel, channelName: nomeDoCanal(), url: location.href, visible: document.visibilityState });
   }
+  // ------------------------------------------------------------ mensagens perdidas (PC desligado)
+  // Ao abrir o canal, o Discord só mostra as mensagens mais recentes. Se o servidor ainda não tem
+  // as anteriores (chegaram com o PC desligado), rola o histórico para cima, lendo tudo, até
+  // encontrar a última mensagem que o servidor já conhece; depois volta para o fim (ao vivo).
+  const pedir = (type, payload) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ type, payload }, (r) => { void chrome.runtime.lastError; resolve(r); });
+    } catch (e) { resolve(null); }
+  });
+  const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+  const idsNaTela = () => [...document.querySelectorAll('li[id^="chat-messages-"]')]
+    .map((li) => (li.id.match(/-(\d+)$/) || [])[1]).filter(Boolean).map((id) => BigInt(id));
+  const rolagem = () => document.querySelector('[data-list-id="chat-messages"]')?.closest('[class*="scroller"]');
+
+  let recuperando = false;
+  async function recuperarPerdidas() {
+    const canal = currentChannel();
+    if (!canal || recuperando) return;
+    recuperando = true;
+    let rolou = false;
+    try {
+      // "antes desta página abrir": as mensagens que a página acabou de mandar não contam
+      const r = await pedir("ultima", { channel: canal, antesDe: Math.round(performance.timeOrigin) });
+      if (!r || !r.ok) {
+        // servidor ainda subindo (Chrome abriu antes dele no boot): tenta de novo em 30 s
+        setTimeout(recuperarPerdidas, 30000);
+        return;
+      }
+      if (!r.ultima) return; // canal novo para o servidor: as mensagens da tela bastam
+      const ultima = BigInt(r.ultima);
+      let antes = null, parado = 0, concluiu = false;
+      const vistas = new Set();
+      for (let i = 0; i < 80; i++) {          // até ~2 min rolando
+        scan();
+        const ids = idsNaTela();
+        ids.forEach((id) => vistas.add(id));
+        if (!ids.length) { await esperar(1500); continue; }
+        const maisVelha = ids.reduce((a, b) => (a < b ? a : b));
+        if (maisVelha <= ultima) { concluiu = true; break; }  // chegou no que o servidor já tem
+        if (maisVelha === antes && ++parado >= 4) { concluiu = true; break; } // começo do canal
+        if (maisVelha !== antes) parado = 0;
+        antes = maisVelha;
+        const el = rolagem();
+        if (!el) break;
+        el.scrollTop = 0;
+        el.dispatchEvent(new Event("scroll"));
+        rolou = true;
+        await esperar(1500);
+      }
+      scan();
+      if (concluiu) send("recuperado", { channel: canal, lidas: vistas.size });
+      console.log(`[Ofertazera] período desligado: ${vistas.size} mensagens conferidas${concluiu ? "" : " (incompleto)"}`);
+    } finally {
+      recuperando = false;
+    }
+    if (!rolou) return;
+    {
+      // volta para o fim do canal, para continuar recebendo as novas ao vivo
+      const el = rolagem();
+      if (el) el.scrollTop = el.scrollHeight;
+      await esperar(800);
+      const presente = [...document.querySelectorAll("button, [role=button]")]
+        .find((b) => /pular para o presente|jump to present|ir para o presente/i.test(b.textContent || ""));
+      presente?.click();
+    }
+  }
+
   setInterval(heartbeat, 30000);
   setInterval(scan, 5000); // rede de segurança caso algum evento passe
   setTimeout(() => { heartbeat(); scan(); }, 2000);
+  setTimeout(recuperarPerdidas, 6000); // depois do Discord carregar as mensagens recentes
 })();

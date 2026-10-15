@@ -1154,6 +1154,17 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(anexar_historico([offer_row_to_json(r) for r in rows]))
         if path == "/api/alertas":
             return self._json(alertas_json())
+        if path == "/api/ultima":
+            # última mensagem que o servidor recebeu deste canal antes da aba abrir: a extensão
+            # rola o Discord até ela para recuperar o que chegou com o PC desligado
+            canal = qs.get("canal", "")
+            quebra = get_setting("quebra_" + canal)
+            if quebra:  # a cobertura quebrou (PC/Chrome desligado): recuperar a partir daí
+                return self._json({"ultima": quebra})
+            antes = int(qs.get("antesDe") or 0) or int(time.time() * 1000)
+            row = db_one("SELECT id FROM offers WHERE channel=? AND received_at < ? "
+                         "ORDER BY CAST(id AS INTEGER) DESC LIMIT 1", (canal, antes))
+            return self._json({"ultima": row["id"] if row else None})
         if path == "/api/status":
             return self._json(self.status_json())
         if path == "/api/celular":
@@ -1207,6 +1218,16 @@ class Handler(SimpleHTTPRequestHandler):
             m = re.search(r"/channels/[^/]+/(\d+)", str(body.get("url") or ""))
             cid = str(body.get("channel") or (m.group(1) if m else "?"))
             STATE["last_heartbeat"] = agora
+            # Sinal parado por mais de 3 min (PC/Chrome desligado): marca onde a cobertura quebrou,
+            # para a extensão recuperar as mensagens desse período rolando o Discord
+            anterior = int(get_setting("sinal_" + cid) or 0)
+            if anterior and agora - anterior > 3 * 60_000 and not get_setting("quebra_" + cid):
+                ult = db_one("SELECT id FROM offers WHERE channel=? AND received_at <= ? "
+                             "ORDER BY CAST(id AS INTEGER) DESC LIMIT 1", (cid, anterior + 60_000))
+                if ult:
+                    set_setting("quebra_" + cid, ult["id"])
+                    print(f"[recuperar] canal {cid} ficou sem sinal desde {time.strftime('%d/%m %H:%M', time.localtime(anterior / 1000))}")
+            set_setting("sinal_" + cid, str(agora))
             c = STATE["canais"].setdefault(cid, {"ultimoSinal": agora, "avisado": False})
             c["ultimoSinal"] = agora
             nome = str(body.get("channelName") or "").strip()[:60]
@@ -1220,6 +1241,13 @@ class Handler(SimpleHTTPRequestHandler):
                 _publicar.set()
                 enviar_push({"title": f"✅ Voltou a monitorar: {nomes.get(cid) or 'canal'}", "body": "Tudo certo de novo.",
                              "tag": "ofertazera-monitor-" + cid})
+            return self._json({"ok": True})
+        if path == "/api/recuperado":
+            # a extensão terminou de rolar o histórico até o ponto da quebra
+            canal = str(body.get("channel") or "")
+            if get_setting("quebra_" + canal):
+                set_setting("quebra_" + canal, "")
+                print(f"[recuperar] canal {canal}: mensagens do período desligado recuperadas ({body.get('lidas', 0)} lidas)")
             return self._json({"ok": True})
         if path == "/api/alertas":
             STATE["alertas_sujos"] = True
