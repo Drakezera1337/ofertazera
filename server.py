@@ -820,7 +820,7 @@ GIST_LER_S = 20                   # confere push.json / alertas.json
 GIST_REPUBLICAR_S = 5 * 60        # sem novidade, republica (o celular ve que o PC esta vivo)
 
 _publicar = threading.Event()
-_push = {"inscricoes": [], "testes": {}, "lock": threading.Lock()}
+_push = {"inscricoes": json.loads(get_setting("push_inscricoes") or "[]"), "testes": {}, "lock": threading.Lock()}
 _webpush = None
 
 
@@ -1021,6 +1021,8 @@ def processar_gist():
                   if isinstance(i, dict) and i.get("endpoint") and i.get("keys")]
     with _push["lock"]:
         _push["inscricoes"] = inscricoes
+    # cópia local: as notificações saem mesmo se o GitHub estiver fora do ar ou bloqueando
+    set_setting("push_inscricoes", json.dumps(inscricoes))
     testes = json.loads(get_setting("push_testes") or "{}")
     for insc in inscricoes:
         if insc.get("testeEm", 0) > testes.get(insc["endpoint"], 0):
@@ -1041,26 +1043,47 @@ def processar_gist():
     return local_ts > remoto_ts
 
 
+# O GitHub bloqueia (403/429, "limite secundário") quem grava no Gist com muita frequência:
+# publica no máximo a cada GIST_PUBLICAR_MIN_S e, se bloquear, espera o tempo pedido (ou 1 min, dobrando).
+GIST_PUBLICAR_MIN_S = 20
+
+
 def laco_gist():
     ultima_leitura = ultima_publicacao = 0
     publicar_alertas = True
+    pendente = False          # há mudança esperando publicação
+    pausa_ate, espera = 0, 60  # bloqueio do GitHub
     while True:
-        acordou = _publicar.wait(timeout=5)
-        if acordou:
-            time.sleep(1.0)  # junta varias mensagens chegando juntas num PATCH so
+        if _publicar.wait(timeout=5):
             _publicar.clear()
+            pendente = True
         if not gist_cfg():
             continue
         agora = time.time()
+        if agora < pausa_ate:
+            continue
         try:
             if agora - ultima_leitura > GIST_LER_S:
                 ultima_leitura = agora
                 publicar_alertas = processar_gist() or publicar_alertas
             if STATE.pop("alertas_sujos", False):
                 publicar_alertas = True
-            if acordou or publicar_alertas or agora - ultima_publicacao > GIST_REPUBLICAR_S:
+            pode = agora - ultima_publicacao >= GIST_PUBLICAR_MIN_S
+            if (pode and (pendente or publicar_alertas)) or agora - ultima_publicacao > GIST_REPUBLICAR_S:
                 publicar_gist(incluir_alertas=publicar_alertas)
-                ultima_publicacao, publicar_alertas = agora, False
+                ultima_publicacao, publicar_alertas, pendente = time.time(), False, False
+            espera = 60
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 429):
+                pedido = int(exc.headers.get("Retry-After") or 0)
+                reset = int(exc.headers.get("X-RateLimit-Reset") or 0) - time.time() if exc.headers.get("X-RateLimit-Remaining") == "0" else 0
+                segundos = max(pedido, reset, espera)
+                pausa_ate, espera = time.time() + segundos, min(espera * 2, 900)
+                pendente = True
+                print(f"[gist] GitHub bloqueou ({exc.code}); tento de novo em {int(segundos)} s")
+            else:
+                print(f"[gist] {exc}")
+                time.sleep(10)
         except Exception as exc:  # noqa: BLE001 - sem internet, token trocado...: tenta de novo
             print(f"[gist] {exc}")
             time.sleep(10)
