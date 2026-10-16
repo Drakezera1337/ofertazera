@@ -878,8 +878,8 @@ PUSH_CONTATO = "mailto:276884055+Drakezera1337@users.noreply.github.com"
 GIST_API = "https://api.github.com/gists"
 GIST_DESCRICAO = "Ofertazera – ofertas do Discord"
 PUBLICAR_MAX = 150                # ofertas no ofertas.json
-GIST_LER_S = 20                   # confere push.json / alertas.json
-GIST_REPUBLICAR_S = 5 * 60        # sem novidade, republica (o celular ve que o PC esta vivo)
+GIST_LER_S = 30                   # confere push.json / alertas.json
+GIST_REPUBLICAR_S = 15 * 60       # sem novidade, republica (o celular ve que o PC esta vivo)
 
 _publicar = threading.Event()
 _push = {"inscricoes": json.loads(get_setting("push_inscricoes") or "[]"), "testes": {}, "lock": threading.Lock()}
@@ -1107,7 +1107,8 @@ def processar_gist():
 
 # O GitHub bloqueia (403/429, "limite secundário") quem grava no Gist com muita frequência:
 # publica no máximo a cada GIST_PUBLICAR_MIN_S e, se bloquear, espera o tempo pedido (ou 1 min, dobrando).
-GIST_PUBLICAR_MIN_S = 20
+# (20 s ainda gerava bloqueio; a notificação não depende disto: o push já leva os dados da oferta)
+GIST_PUBLICAR_MIN_S = 60
 
 
 def laco_gist():

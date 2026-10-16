@@ -162,7 +162,7 @@
     pedir("heartbeat", { channel, channelName: nomeDoCanal(), url: location.href, visible: document.visibilityState })
       .then((r) => {
         // servidor ficou fora: recupera o buraco (no máximo uma tentativa a cada 10 min)
-        if (r && r.recuperar && Date.now() - ultimaTentativa > 10 * 60_000) recuperarPerdidas();
+        if (r && r.recuperar) recuperarPerdidas();
       });
   }
   // ------------------------------------------------------------ mensagens perdidas (PC desligado)
@@ -180,18 +180,23 @@
   const rolagem = () => document.querySelector('[data-list-id="chat-messages"]')?.closest('[class*="scroller"]');
 
   let recuperando = false;
-  let ultimaTentativa = 0;
+  // guardado na aba: a página recarrega depois de recuperar e não pode tentar de novo em seguida
+  let ultimaTentativa = Number(sessionStorage.getItem("ofertazera:tentativa") || 0);
   async function recuperarPerdidas() {
     const canal = currentChannel();
     if (!canal || recuperando) return;
+    if (Date.now() - ultimaTentativa < 10 * 60_000) return; // tentou há pouco
     recuperando = true;
     ultimaTentativa = Date.now();
+    sessionStorage.setItem("ofertazera:tentativa", String(ultimaTentativa));
     let rolou = false;
     try {
       // "antes desta página abrir": as mensagens que a página acabou de mandar não contam
       const r = await pedir("ultima", { channel: canal, antesDe: Math.round(performance.timeOrigin) });
       if (!r || !r.ok) {
         // servidor ainda subindo (Chrome abriu antes dele no boot): tenta de novo em 30 s
+        ultimaTentativa = 0;
+        sessionStorage.removeItem("ofertazera:tentativa");
         setTimeout(recuperarPerdidas, 30000);
         return;
       }
@@ -223,16 +228,25 @@
       recuperando = false;
     }
     if (!rolou) return;
-    {
-      // volta para o fim do canal, para continuar recebendo as novas ao vivo
-      const el = rolagem();
-      if (el) el.scrollTop = el.scrollHeight;
-      await esperar(800);
-      const presente = [...document.querySelectorAll("button, [role=button]")]
-        .find((b) => /pular para o presente|jump to present|ir para o presente/i.test(b.textContent || ""));
-      presente?.click();
-    }
+    // Volta para o fim do canal (ao vivo). Rolar de volta não basta: o Discord fica "preso" no
+    // histórico e as mensagens novas não aparecem. Recarregar abre sempre no presente.
+    await esperar(1500); // dá tempo da última leva chegar ao servidor
+    location.reload();
   }
+
+  // Proteção: aba monitorada em segundo plano mostrando mensagens antigas (barra "ir para o presente")
+  // não vê as novas; volta sozinha para o presente.
+  function presoNoPassado() {
+    return [...document.querySelectorAll("button, [role=button], [class*='jumpToPresent']")]
+      .some((b) => /pular para o presente|ir para o presente|jump to present|mensagens mais recentes|newer messages/i.test(b.textContent || ""));
+  }
+  setInterval(() => {
+    if (recuperando || !document.hidden || !currentChannel()) return;
+    if (presoNoPassado()) {
+      console.log("[Ofertazera] aba presa em mensagens antigas: voltando ao presente");
+      location.reload();
+    }
+  }, 60_000);
 
   setInterval(heartbeat, 30000);
   setInterval(scan, 5000); // rede de segurança caso algum evento passe

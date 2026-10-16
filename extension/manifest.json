@@ -1,7 +1,7 @@
 ﻿{
   "manifest_version": 3,
   "name": "Ofertazera - Monitor do Discord",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Mantém os canais de ofertas do Discord abertos num grupo recolhido e envia as ofertas para o app Ofertazera.",
   "permissions": ["storage", "tabs", "tabGroups", "alarms"],
   "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],

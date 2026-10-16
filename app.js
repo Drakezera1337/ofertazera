@@ -147,7 +147,7 @@ function chegaramNovas(novos) {
 function monitorando() {
   if (!S.status) return false;
   // No celular, o ofertas.json velho (PC desligado) também conta como parado
-  const fresco = NO_PC || Date.now() - S.publicadoEm < 10 * 60 * 1000;
+  const fresco = NO_PC || Date.now() - S.publicadoEm < 20 * 60 * 1000; // o PC republica a cada 15 min
   return Boolean(S.status.monitorando && fresco);
 }
 function atualizarSelo() {
