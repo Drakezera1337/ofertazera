@@ -724,3 +724,13 @@ if ('serviceWorker' in navigator && !NO_PC) navigator.serviceWorker.register('sw
 atualizarSelo();
 rotear();
 carregar().then(() => { if (NO_PC) laçoPc(); });
+
+// Zoom da página bloqueado no celular (pinça e dois toques não ampliam sem querer):
+// - iPhone/Safari ignora o user-scalable=no e manda eventos "gesture*" na pinça;
+// - fallback: dois dedos se mexendo não fazem nada (exceto nas fotos em tela cheia).
+for (const tipo of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(tipo, (e) => { if (!e.target.closest?.('#galeria')) e.preventDefault(); }, { passive: false });
+}
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1 && !e.target.closest?.('#galeria')) e.preventDefault();
+}, { passive: false });
