@@ -464,22 +464,38 @@ async function ativarPush() {
 
 // PC (localhost): a inscrição do Chrome vai direto para o server.py (sem Gist)
 async function ativarPushPc() {
-  const permissao = await Notification.requestPermission();
-  if (permissao !== 'granted') { renderSettings(); return toast('Sem permissão para notificar'); }
+  // Cada passo tem nome e tempo limite: se falhar, a mensagem diz exatamente onde
+  const passo = (nome, promessa, ms = 15000) => Promise.race([
+    promessa,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('demorou demais')), ms)),
+  ]).catch((e) => { throw new Error(`${nome}: ${e.message || e}`); });
+  const status = $('#statusPc');
+  const mostrar = (msg) => { if (status) status.textContent = msg; };
   try {
-    const reg = await navigator.serviceWorker.getRegistration('./') || await navigator.serviceWorker.register('sw.js');
-    await navigator.serviceWorker.ready;
+    mostrar('1/5 Pedindo permissão…');
+    const permissao = await passo('Permissão', Notification.requestPermission(), 60000);
+    if (permissao !== 'granted') throw new Error(`Permissão: o Chrome respondeu "${permissao}"`);
+    mostrar('2/5 Registrando o service worker…');
+    const reg = await passo('Service worker', navigator.serviceWorker.register('sw.js'));
+    await passo('Service worker (ativação)', navigator.serviceWorker.ready);
+    mostrar('3/5 Inscrevendo no push do Chrome…');
     const atual = await reg.pushManager.getSubscription();
     await atual?.unsubscribe().catch(() => {});
-    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: chaveParaBytes(OZ_CONFIG.pushChavePublica) });
+    const sub = await passo('Inscrição no push do Chrome', reg.pushManager.subscribe({
+      userVisibleOnly: true, applicationServerKey: chaveParaBytes(OZ_CONFIG.pushChavePublica) }));
     const { endpoint, keys } = sub.toJSON();
-    await api('push-pc', { method: 'POST', body: { endpoint, keys, remover: atual ? [atual.endpoint] : [] } });
-    await api('push-teste', { method: 'POST', body: { exemplo: true, endpoint } });
+    mostrar('4/5 Salvando no servidor…');
+    const r = await passo('Salvar no servidor', api('push-pc', { method: 'POST', body: { endpoint, keys, remover: atual ? [atual.endpoint] : [] } }));
+    if (!r.ok) throw new Error(`Salvar no servidor: ${r.erro || 'resposta inesperada'}`);
+    mostrar('5/5 Enviando o exemplo…');
+    const t = await passo('Enviar exemplo', api('push-teste', { method: 'POST', body: { exemplo: true, endpoint } }));
+    if (!t.ok) throw new Error('Enviar exemplo: o servidor não conseguiu enviar (veja o server.log)');
     toast('Notificações ativadas no PC — veja o exemplo no canto da tela');
+    renderSettings();
   } catch (err) {
+    mostrar(`❌ Falhou em → ${err.message}`);
     toast(`Não foi possível ativar: ${err.message}`);
   }
-  renderSettings();
 }
 
 // Ao abrir o app: se o iPhone trocou a inscrição sozinho, atualiza no Gist sem pedir nada
@@ -631,6 +647,8 @@ async function renderSettings() {
         ${!pcAtivo && pushSuportado() && Notification.permission !== 'denied' ? '<button class="btn btn-orange" id="ativarPc">🔔 Ativar no PC</button>' : ''}
         ${pcAtivo ? '<button class="btn btn-purple" id="exemploPc">Mostrar exemplo</button><button class="btn btn-ghost" id="desativarPc">Desativar</button>' : ''}
       </div>
+      <p id="statusPc" style="margin-top:10px;font-weight:700"></p>
+      ${pcAtivo ? '<p>O exemplo não aparece? No Windows: Configurações → Sistema → Notificações → <b>Google Chrome</b> ligado, e o <b>Não incomodar</b> desligado.</p>' : ''}
     </div>
     <div class="panel">
       <h2>📱 Celular</h2>
