@@ -232,6 +232,20 @@ PRECO_PAGINA_RE = re.compile(
     r"""|<meta[^>]+content=["']([\d.,]+)["'][^>]*(?:itemprop=["']price["']|property=["'](?:product:price:amount|og:price:amount)["'])""", re.I)
 
 
+LOJAS_NOMES = ("terabyte", "e-shop", "eshop", "kabum", "mercado livre", "mercadolivre", "amazon", "magalu",
+               "magazine luiza", "shopee", "pichau", "aliexpress", "casas bahia", "americanas", "loja", "oficial",
+               "compre", "ofertas", "frete gratis", "frete grátis", "site")
+
+
+def titulo_generico(t):
+    """Título de página que é só o nome do site/loja (sem número de modelo nem palavras do produto)."""
+    resto = normalize(t)
+    for n in LOJAS_NOMES:
+        resto = resto.replace(normalize(n), " ")
+    resto = re.sub(r"[^a-z0-9]+", " ", resto).strip()
+    return not re.search(r"\d", resto) and len(resto.split()) < 3
+
+
 def buscar_pagina(url):
     """Abre o link da oferta (seguindo encurtadores como tidd.ly) e devolve
     {"final": url_final, "foto": ..., "titulo": nome do produto, "preco": ...} (o que a página tiver)."""
@@ -257,6 +271,8 @@ def buscar_pagina(url):
     if titulo:  # "Placa ... | Mercado Livre" / "Placa ... - KaBuM!" -> só o produto
         titulo = re.split(r"\s+[|–-]\s+(?=[^|–-]*(?:mercado livre|kabum|amazon|magalu|magazine|shopee|pichau|terabyte)[^|–-]*$)",
                           titulo, flags=re.I)[0].strip()[:140]
+    if titulo and titulo_generico(titulo):
+        titulo = None  # "Terabyte E-Shop", "KaBuM!": a página não diz qual é o produto
     m = PRECO_PAGINA_RE.search(pagina)
     preco = parse_brl(m.group(1) or m.group(2)) if m else None
     return {"final": final, "foto": foto if foto and foto.startswith("http") else None,
@@ -296,12 +312,19 @@ def make_title(text):
             continue
         if re.fullmatch(r"cupom\s*:?\s*\S+", low):  # "Cupom: CODIGO" sozinho
             continue
+        if re.sub(r"[^a-z ]", "", low).strip() in ("kabum", "terabyte", "mercado livre", "amazon", "magalu",
+                                                   "shopee", "pichau", "aliexpress", "anuncio"):
+            continue  # linha que é só o nome da loja
         if low.startswith(("link", "compre", "de r$", "por r$", "preco", "frete", "resgate", "ative")):
             continue
         return line[:140]
     # So sobrou a linha da mencao: "@Placa de vídeo RX 9070 GRE" (mencao e produto na mesma linha)
     for raw in (text or "").splitlines():
         line = clean_line(raw.strip().lstrip("@"))
+        # "@Placa de vídeo Placa de Vídeo ASRock..." -> a menção repete o começo do nome: tira a repetição
+        rep = re.match(r"^(.{4,40}?)\s+\1\b", line, re.I)
+        if rep:
+            line = line[len(rep.group(1)):].strip()
         if raw.strip().startswith("@") and len(line) > 15:
             return line[:140]
     return clean_line(text or "")[:140] or "Oferta"
@@ -553,7 +576,7 @@ def save_parsed(mid, text, parsed, matched, overwrite_store=False):
     if og:
         parsed = {**parsed, "image": og, "images": [og] + [i for i in parsed["images"] if i != og]}
     # Post sem nome do produto ou sem preço: vale o que a página da loja informou
-    if pag.get("page_title") and titulo_fraco(parsed["title"]):
+    if pag.get("page_title") and titulo_fraco(parsed["title"]) and not titulo_generico(pag["page_title"]):
         parsed = {**parsed, "title": pag["page_title"]}
     if pag.get("page_price") and not parsed["price"]:
         parsed = {**parsed, "price": pag["page_price"]}
