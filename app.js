@@ -462,6 +462,26 @@ async function ativarPush() {
   renderSettings();
 }
 
+// PC (localhost): a inscrição do Chrome vai direto para o server.py (sem Gist)
+async function ativarPushPc() {
+  const permissao = await Notification.requestPermission();
+  if (permissao !== 'granted') { renderSettings(); return toast('Sem permissão para notificar'); }
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('./') || await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    const atual = await reg.pushManager.getSubscription();
+    await atual?.unsubscribe().catch(() => {});
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: chaveParaBytes(OZ_CONFIG.pushChavePublica) });
+    const { endpoint, keys } = sub.toJSON();
+    await api('push-pc', { method: 'POST', body: { endpoint, keys, remover: atual ? [atual.endpoint] : [] } });
+    await api('push-teste', { method: 'POST', body: { exemplo: true, endpoint } });
+    toast('Notificações ativadas no PC — veja o exemplo no canto da tela');
+  } catch (err) {
+    toast(`Não foi possível ativar: ${err.message}`);
+  }
+  renderSettings();
+}
+
 // Ao abrir o app: se o iPhone trocou a inscrição sozinho, atualiza no Gist sem pedir nada
 async function conferirInscricao() {
   const registro = lerJSON(K.push, null);
@@ -598,12 +618,25 @@ async function renderSettings() {
   if (NO_PC) {
     const st = await api('status');
     S.status = st;
+    const subPc = await inscricaoReal();
+    const pcAtivo = Boolean(subPc && st.pcEndpoints.includes(subPc.endpoint)) && Notification.permission === 'granted';
     view.innerHTML = `${blocoMonitor()}
+    <div class="panel">
+      <h2>🔔 Notificações neste PC</h2>
+      <p>${!pushSuportado() ? '⚠️ Este navegador não suporta notificações.'
+        : pcAtivo ? '✅ Ativas: as ofertas aparecem no canto da tela do Windows, com preço, cupom, foto e o histórico (menor, média, maior). Alertas seus e "menor preço já visto" ficam na tela até você fechar.'
+          : Notification.permission === 'denied' ? '🚫 Bloqueadas no Chrome: clique no cadeado ao lado do endereço → Notificações → Permitir.'
+            : 'Desligadas neste PC.'}</p>
+      <div class="row">
+        ${!pcAtivo && pushSuportado() && Notification.permission !== 'denied' ? '<button class="btn btn-orange" id="ativarPc">🔔 Ativar no PC</button>' : ''}
+        ${pcAtivo ? '<button class="btn btn-purple" id="exemploPc">Mostrar exemplo</button><button class="btn btn-ghost" id="desativarPc">Desativar</button>' : ''}
+      </div>
+    </div>
     <div class="panel">
       <h2>📱 Celular</h2>
       <p>O celular usa o app publicado (<a class="code" href="${esc(OZ_CONFIG.sitePublico)}" target="_blank">${esc(OZ_CONFIG.sitePublico.replace('https://', ''))}</a>), que lê as ofertas de um <b>Gist secreto</b> do GitHub e recebe as notificações deste PC.</p>
       <p>${st.gist ? `✅ Conectado ao Gist ${esc(st.gist.id.slice(0, 8))}… · token …${esc(st.gist.tokenFim)}` : 'Nenhum Gist conectado: o celular não recebe ofertas nem avisos.'}</p>
-      <div class="field"><label>Token do GitHub (só a permissão <b>gist</b> — pode ser o mesmo do FB Radar)</label>
+      <div class="field"><label>Token do GitHub (só a permissão <b>gist</b>, criado só para o Ofertazera)</label>
         <div class="row"><input id="token" type="password" placeholder="ghp_… ou github_pat_…" autocomplete="off">
         <button class="btn btn-purple btn-sm" style="flex:0 0 auto" id="conectar">${st.gist ? 'Trocar' : 'Conectar'}</button></div>
       </div>
@@ -626,9 +659,20 @@ async function renderSettings() {
     };
     $('#qr').onclick = mostrarQr;
     $('#teste').onclick = async () => {
-      const r = await api('push-teste', { method: 'POST' });
+      const r = await api('push-teste', { method: 'POST', body: { exemplo: true } });
       toast(r.ok ? `Enviada para ${r.aparelhos} aparelho(s)` : 'Nenhum aparelho recebeu');
     };
+    $('#ativarPc')?.addEventListener('click', ativarPushPc);
+    $('#exemploPc')?.addEventListener('click', async () => {
+      const r = await api('push-teste', { method: 'POST', body: { exemplo: true, endpoint: subPc.endpoint } });
+      toast(r.ok ? 'Exemplo enviado — veja no canto da tela' : 'Não foi possível enviar');
+    });
+    $('#desativarPc')?.addEventListener('click', async () => {
+      await api('push-pc-remover', { method: 'POST', body: { endpoint: subPc.endpoint } });
+      await subPc.unsubscribe().catch(() => {});
+      toast('Notificações desativadas neste PC');
+      renderSettings();
+    });
     return;
   }
 
@@ -755,7 +799,8 @@ if (!NO_PC) {
     cache.ofertas.forEach((o) => { S.vistos.add(o.id); S.desenhados.add(o.id); });
   }
 }
-if ('serviceWorker' in navigator && !NO_PC) navigator.serviceWorker.register('sw.js').catch(() => {});
+// também no PC (localhost): é o service worker que mostra as notificações no Windows
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 atualizarSelo();
 rotear();
 carregar().then(() => { if (NO_PC) laçoPc(); });

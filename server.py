@@ -991,12 +991,20 @@ def carregar_webpush():
     return _webpush or None
 
 
+def inscricoes_pc():
+    """Chrome deste PC inscrito pelo app em localhost (não passa pelo Gist)."""
+    try:
+        return [i for i in json.loads(get_setting("push_pc") or "[]") if i.get("endpoint") and i.get("keys")]
+    except ValueError:
+        return []
+
+
 def enviar_push(payload, inscricoes=None):
-    """Envia para os aparelhos inscritos; tira do push.json os que nao existem mais."""
+    """Envia para os aparelhos inscritos (celulares do Gist + Chrome deste PC); tira os que não existem mais."""
     lib = carregar_webpush()
     if inscricoes is None:
         with _push["lock"]:
-            inscricoes = list(_push["inscricoes"])
+            inscricoes = list(_push["inscricoes"]) + inscricoes_pc()
     if not lib or not inscricoes or not os.path.exists(PUSH_PEM):
         return 0
     webpush, WebPushException = lib
@@ -1014,6 +1022,11 @@ def enviar_push(payload, inscricoes=None):
             print(f"[push] {insc.get('aparelho', '?')}: {exc}")
         except (KeyError, TypeError) as exc:
             print(f"[push] inscricao invalida: {exc}")
+    if mortos:
+        # Chrome do PC: a inscrição fica no banco local
+        pc = inscricoes_pc()
+        if any(i["endpoint"] in mortos for i in pc):
+            set_setting("push_pc", json.dumps([i for i in pc if i["endpoint"] not in mortos]))
     if mortos and gist_cfg():
         with _push["lock"]:
             _push["inscricoes"] = [i for i in _push["inscricoes"] if i["endpoint"] not in mortos]
@@ -1033,12 +1046,30 @@ def mes_ano(ms):
     return f"{MESES[t.tm_mon - 1]}/{t.tm_year}"
 
 
+def etiqueta_historico(preco, hist):
+    """Comparação com o histórico do item, igual à etiqueta do card no app."""
+    if not hist or not preco:
+        return None
+    if hist["n"] < 2:
+        return f"🆕 1º registro de {hist['nome']}"
+    if preco <= hist["menor"]:
+        return "🔥 MENOR PREÇO JÁ VISTO"
+    pct = round((preco / hist["media"] - 1) * 100)
+    if pct <= -1:
+        return f"📉 {pct}% abaixo da média"
+    if pct >= 1:
+        return f"📈 +{pct}% acima da média"
+    return "➖ Na média"
+
+
 def payload_oferta(o, matched):
     linhas = []
+    hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
     if o.get("price"):
         p = fmt_brl(o["price"])
         if o.get("old_price"):
-            p += f" (de {fmt_brl(o['old_price'])})"
+            desc = round((1 - o["price"] / o["old_price"]) * 100)
+            p += f"  (de {fmt_brl(o['old_price'])}" + (f" · -{desc}%" if desc > 0 else "") + ")"
         linhas.append("💰 " + p + (f" · {o['store']}" if o.get("store") else ""))
     elif o.get("store"):
         linhas.append("🛒 " + o["store"])
@@ -1047,13 +1078,14 @@ def payload_oferta(o, matched):
         linhas.append(("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"]))
     elif o.get("coupon_note"):
         linhas.append("🎟️ " + o["coupon_note"] + " — resgate antes")
-    hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
+    etiqueta = etiqueta_historico(o.get("price"), hist)
+    if etiqueta:
+        linhas.append(etiqueta)
     if hist and hist["n"] > 1:
-        if o["price"] <= hist["menor"]:
-            linhas.append(f"🔥 Menor preço já visto (média {fmt_brl(hist['media'])})")
-        else:
-            linhas.append(f"📊 Menor {fmt_brl(hist['menor'])} ({mes_ano(hist['menorEm'])}) · média {fmt_brl(hist['media'])}")
-    titulo = o["title"]
+        linhas.append(f"📊 Menor {fmt_brl(hist['menor'])} ({mes_ano(hist['menorEm'])}) · Média {fmt_brl(round(hist['media']))}"
+                      f" · Maior {fmt_brl(hist['maior'])} · {hist['n']} ofertas")
+    # Título: preço na frente, para bater o olho (e o alerta, quando houver)
+    titulo = (f"{fmt_brl(o['price'])} · " if o.get("price") else "") + o["title"]
     if matched:
         titulo = f"🎯 {matched[0]} · {titulo}"
     # Resumo da oferta vai junto: o app abre o detalhe na hora, mesmo antes do Gist atualizar
@@ -1062,6 +1094,8 @@ def payload_oferta(o, matched):
     resumo["coupons"] = cupons
     if hist:  # sem a lista "ultimos": o push tem limite de tamanho
         resumo["historico"] = {k: v for k, v in hist.items() if k != "ultimos"}
+    # fica na tela até fechar (Windows) quando é alerta seu ou o menor preço já visto
+    resumo["destaque"] = bool(matched) or (etiqueta == "🔥 MENOR PREÇO JÁ VISTO")
     return {
         "title": titulo[:120],
         "body": "\n".join(linhas) or (o.get("text") or "")[:160],
@@ -1254,12 +1288,15 @@ class Handler(SimpleHTTPRequestHandler):
         cfg = gist_cfg()
         with _push["lock"]:
             aparelhos = [i.get("aparelho", "?") for i in _push["inscricoes"]]
+        pc = inscricoes_pc()
+        aparelhos += [i.get("aparelho", "PC") for i in pc]
         return {
             **status_monitor(),
             "last_ingest": STATE["last_ingest"],
             "total": db_one("SELECT COUNT(*) AS n FROM offers")["n"],
             "gist": {"id": cfg["gistId"], "tokenFim": cfg["token"][-4:]} if cfg else None,
             "aparelhos": aparelhos,
+            "pcEndpoints": [i["endpoint"] for i in pc],
             "pushPronto": os.path.exists(PUSH_PEM) and bool(carregar_webpush()),
             "server_time": int(time.time() * 1000),
         }
@@ -1328,9 +1365,32 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:  # noqa: BLE001
                 return self._json({"erro": str(e)}, 400)
             return self._json({"ok": True, "gistId": gid, "criado": criado})
+        if path == "/api/push-pc":
+            # Chrome deste PC: inscrição guardada no banco local (sem Gist)
+            ep, keys = body.get("endpoint"), body.get("keys")
+            if not ep or not isinstance(keys, dict):
+                return self._json({"erro": "inscrição inválida"}, 400)
+            fora = {ep, *(body.get("remover") or [])}
+            lista = [i for i in inscricoes_pc() if i["endpoint"] not in fora]
+            lista.append({"endpoint": ep, "keys": keys, "criadoEm": int(time.time() * 1000),
+                          "aparelho": f"PC · Chrome (ativado em {time.strftime('%d/%m/%Y')})"})
+            set_setting("push_pc", json.dumps(lista))
+            return self._json({"ok": True})
+        if path == "/api/push-pc-remover":
+            set_setting("push_pc", json.dumps([i for i in inscricoes_pc() if i["endpoint"] != body.get("endpoint")]))
+            return self._json({"ok": True})
         if path == "/api/push-teste":
-            n = enviar_push({"title": "Ofertazera", "body": "🔔 Teste: as notificações estão funcionando!",
-                             "tag": "ofertazera-teste"})
+            alvo = [i for i in inscricoes_pc() if i["endpoint"] == body.get("endpoint")] if body.get("endpoint") else None
+            if body.get("exemplo"):
+                # uma oferta real com preço e histórico, para ver o formato completo
+                row = db_one("SELECT o.* FROM offers o JOIN historico_precos h ON h.offer_id = o.id "
+                             "ORDER BY o.posted_at DESC LIMIT 1")
+                payload = payload_oferta(row, ["Exemplo"]) if row else None
+            else:
+                payload = None
+            payload = payload or {"title": "Ofertazera", "body": "🔔 Teste: as notificações estão funcionando!",
+                                  "tag": "ofertazera-teste"}
+            n = enviar_push(payload, alvo)
             return self._json({"ok": n > 0, "aparelhos": n})
         return self._json({"error": "rota inválida"}, 404)
 

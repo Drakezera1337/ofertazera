@@ -1,5 +1,5 @@
 // Ofertazera: cache para abrir rápido/offline e notificações de ofertas (enviadas pelo server.py do PC).
-const CACHE = 'ofertazera-v7';
+const CACHE = 'ofertazera-v8';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'sync.js',
   'icon.svg', 'icon-192.png', 'badge-96.png', 'manifest.webmanifest'];
 
@@ -49,7 +49,7 @@ self.addEventListener('push', (e) => {
       body: d.body || 'Oferta nova no Discord.',
       tag: d.tag || 'ofertazera',
       renotify: true,
-      requireInteraction: Boolean(o),
+      requireInteraction: Boolean(o && o.destaque), // alerta seu / menor preço já visto: fica até fechar
       vibrate: [200, 100, 200, 100, 300],
       icon: 'icon-192.png',
       badge: 'badge-96.png',
