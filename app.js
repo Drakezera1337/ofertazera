@@ -187,8 +187,8 @@ function comparacao(o, h) {
   if (h.n < 2) return '';
   if (o.price <= h.menor) return '<span class="hist-tag melhor">🔥 menor preço já visto</span>';
   const pct = Math.round((o.price / h.media - 1) * 100);
-  if (pct <= -1) return `<span class="hist-tag abaixo">${pct}% da média</span>`;
-  if (pct >= 1) return `<span class="hist-tag acima">+${pct}% da média</span>`;
+  if (pct <= -1) return `<span class="hist-tag abaixo">▼ ${-pct}% abaixo da média</span>`;
+  if (pct >= 1) return `<span class="hist-tag acima">▲ ${pct}% acima da média</span>`;
   return '<span class="hist-tag">na média</span>';
 }
 function historicoCard(o) {

@@ -213,8 +213,9 @@ button { font: inherit; cursor: pointer; }
 .hist b { color: var(--text); font-weight: 800; }
 .hist-tag { display: inline-block; font-size: 10.5px; font-weight: 800; padding: 1px 6px; border-radius: 4px; background: var(--line); color: var(--text); white-space: nowrap; }
 .hist-tag.melhor { background: var(--green); color: #fff; }
-.hist-tag.abaixo { background: rgba(0, 168, 90, .15); color: var(--green); }
-.hist-tag.acima { background: rgba(226, 38, 77, .12); color: var(--red); }
+/* abaixo da média: verde sólido; acima: vermelho sólido (destaque forte, igual nos dois temas) */
+.hist-tag.abaixo { background: #00a85a; color: #fff; }
+.hist-tag.acima { background: #e2264d; color: #fff; }
 .hist-box { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .hist-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
 .hist-top span { color: var(--muted); font-size: 13px; font-weight: 700; text-align: right; }
@@ -231,3 +232,4 @@ button { font: inherit; cursor: pointer; }
    celular. O iPhone ignora o user-scalable=no do viewport; isto e o bloqueio
    dos eventos "gesture*" no app.js cobrem ele. */
 html, body { touch-action: pan-x pan-y; }
+.hist .hist-tag.abaixo, .hist .hist-tag.acima, .hist .hist-tag.melhor { font-size: 11.5px; padding: 2px 7px; margin-top: 2px; }

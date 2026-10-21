@@ -1,5 +1,5 @@
 // Ofertazera: cache para abrir rápido/offline e notificações de ofertas (enviadas pelo server.py do PC).
-const CACHE = 'ofertazera-v9';
+const CACHE = 'ofertazera-v10';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'sync.js',
   'icon.svg', 'icon-192.png', 'badge-96.png', 'manifest.webmanifest'];
 

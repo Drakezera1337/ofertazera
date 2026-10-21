@@ -1056,9 +1056,9 @@ def etiqueta_historico(preco, hist):
         return "🔥 MENOR PREÇO JÁ VISTO"
     pct = round((preco / hist["media"] - 1) * 100)
     if pct <= -1:
-        return f"📉 {pct}% abaixo da média"
+        return f"🟢 ▼ {-pct}% ABAIXO DA MÉDIA"  # notificação é só texto: o círculo dá a cor
     if pct >= 1:
-        return f"📈 +{pct}% acima da média"
+        return f"🔴 ▲ {pct}% ACIMA DA MÉDIA"
     return "➖ Na média"
 
 
