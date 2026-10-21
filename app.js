@@ -327,18 +327,28 @@ function renderDetail(id, resumo) {
   </div>
   <div class="cta-bar">
     ${o.coupon_link ? `<a class="btn btn-ghost" href="${esc(o.coupon_link)}" target="_blank" rel="noopener">1º Resgatar cupons</a>` : ''}
-    ${o.link ? `<button class="btn btn-orange" id="go">${o.coupon ? 'Copiar cupom e ir à loja' : o.coupon_link ? '2º Ir ao produto' : 'Ir para a oferta'}</button>` : ''}
-  </div>`;
+    ${o.link ? `<a class="btn btn-orange" id="go" href="${esc(linkApp(o))}" target="_blank" rel="noopener">${o.coupon ? 'Copiar cupom e abrir na loja' : o.coupon_link ? '2º Abrir o produto' : 'Abrir na loja'}</a>` : ''}
+  </div>
+  ${o.link && IPHONE ? `<a class="abrir-navegador" href="${esc(o.final_url || o.link)}" target="_blank" rel="noopener">o app da loja não abriu? abrir no navegador</a>` : ''}`;
   view.querySelectorAll('.gallery img').forEach((img) => img.onclick = () => {
     $('#hero').innerHTML = `<img src="${esc(img.src)}" alt="" referrerpolicy="no-referrer">`;
     view.querySelectorAll('.gallery img').forEach((x) => x.classList.toggle('sel', x === img));
   });
+  // É um link de verdade (não window.open): tocado pelo dedo, o iOS aciona o link universal e
+  // abre o app da loja. Copia o cupom no mesmo toque, sem segurar a navegação.
   const go = $('#go');
-  if (go) go.onclick = async () => {
-    if (o.coupon) { await copy(o.coupon); toast(`Cupom ${o.coupon} copiado!`); }
-    // endereço final do produto: pula os redirecionamentos do encurtador (abre mais rápido)
-    window.open(o.final_url || o.link, '_blank', 'noopener');
-  };
+  if (go && o.coupon) go.addEventListener('click', () => { copy(o.coupon); toast(`Cupom ${o.coupon} copiado!`); });
+}
+
+// Endereço que abre o app da loja: Amazon tem endereço próprio do app; as outras abrem pelo
+// link universal (o endereço final do produto, sem passar pelo encurtador, que quebra o link universal)
+const IPHONE = /iPhone|iPad|iPod/.test(navigator.userAgent);
+function linkApp(o) {
+  const url = o.final_url || o.link;
+  if (!IPHONE) return url;
+  const asin = (url.match(/amazon\.com\.br\/(?:.*\/)?(?:dp|gp\/product)\/([A-Z0-9]{10})/i) || [])[1];
+  if (asin) return `com.amazon.mobile.shopping.web://www.amazon.com.br/dp/${asin}`;
+  return url;
 }
 
 // ---------------------------------------------------------------- alertas

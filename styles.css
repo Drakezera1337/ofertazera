@@ -233,3 +233,8 @@ button { font: inherit; cursor: pointer; }
    dos eventos "gesture*" no app.js cobrem ele. */
 html, body { touch-action: pan-x pan-y; }
 .hist .hist-tag.abaixo, .hist .hist-tag.acima, .hist .hist-tag.melhor { font-size: 11.5px; padding: 2px 7px; margin-top: 2px; }
+/* link pequeno abaixo da barra de ação (iPhone): plano B se o app da loja não abrir */
+.abrir-navegador { position: fixed; left: 0; right: 0; bottom: calc(60px + 64px + env(safe-area-inset-bottom)); z-index: 15;
+  text-align: center; font-size: 12px; color: var(--muted); text-decoration: underline; padding: 4px; background: var(--card); }
+a.btn { text-decoration: none; }
+.detail { padding-bottom: 130px; }

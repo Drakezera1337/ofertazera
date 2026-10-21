@@ -1,5 +1,5 @@
 // Ofertazera: cache para abrir rápido/offline e notificações de ofertas (enviadas pelo server.py do PC).
-const CACHE = 'ofertazera-v11';
+const CACHE = 'ofertazera-v12';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'sync.js',
   'icon.svg', 'icon-192.png', 'badge-96.png', 'manifest.webmanifest'];
 
@@ -70,9 +70,13 @@ self.addEventListener('notificationclick', (e) => {
   let destino = escopo;
   if (o) {
     const detalhe = `${escopo}#/oferta/${encodeURIComponent(o.id)}?d=${base64url(JSON.stringify(o))}`;
-    if (e.action === 'loja') destino = o.link;
+    // iPhone: abrir o link pela notificação cai sempre no navegador. Abre a oferta no Ofertazera,
+    // onde o botão (tocado pelo dedo) aciona o link universal e o iOS abre o app da loja.
+    const iphone = /iPhone|iPad|iPod/.test(self.navigator.userAgent);
+    if (iphone) destino = detalhe;
+    else if (e.action === 'loja') destino = o.link;
     else if (e.action === 'app') destino = detalhe;
-    // Toque na notificação: sem cupom para copiar/resgatar vai direto à loja; com cupom, abre o detalhe
+    // PC: sem cupom para copiar/resgatar vai direto à loja; com cupom, abre o detalhe
     else destino = (o.coupon || o.coupon_link || !o.link) ? detalhe : o.link;
   }
   e.waitUntil((async () => {
