@@ -1199,6 +1199,13 @@ def imagem_notificacao_pc(payload):
             with urllib.request.urlopen(urllib.request.Request(o["image"], headers=NAVEGADOR), timeout=6) as r:
                 import io as _io
                 foto = Image.open(_io.BytesIO(r.read())).convert("RGB")
+            # recorta a margem branca das fotos de loja (o produto fica miúdo no meio)
+            from PIL import ImageChops
+            fundo = Image.new("RGB", foto.size, (255, 255, 255))
+            caixa = ImageChops.difference(foto, fundo).convert("L").point(lambda v: 255 if v > 18 else 0).getbbox()
+            if caixa:
+                foto = foto.crop((max(0, caixa[0] - 6), max(0, caixa[1] - 6),
+                                  min(foto.width, caixa[2] + 6), min(foto.height, caixa[3] + 6)))
             # encaixa no espaço (amplia foto pequena da loja, reduz a grande)
             esc = min((L - 20) / foto.width, (A - FAIXA - 16) / foto.height)
             foto = foto.resize((max(1, int(foto.width * esc)), max(1, int(foto.height * esc))), Image.LANCZOS)
