@@ -336,7 +336,8 @@ function renderDetail(id, resumo) {
   const go = $('#go');
   if (go) go.onclick = async () => {
     if (o.coupon) { await copy(o.coupon); toast(`Cupom ${o.coupon} copiado!`); }
-    window.open(o.link, '_blank', 'noopener');
+    // endereço final do produto: pula os redirecionamentos do encurtador (abre mais rápido)
+    window.open(o.final_url || o.link, '_blank', 'noopener');
   };
 }
 

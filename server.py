@@ -793,10 +793,11 @@ def reparse_all():
 
 
 def _notify_later(mid):
-    # Sem foto ainda: espera até ~2 s a busca na página da loja, para a notificação já sair com foto
+    # Espera até ~2 s a busca na página da loja: a notificação sai com foto e com o endereço
+    # final do produto ("Ir à loja" abre direto, sem os redirecionamentos do encurtador)
     for _ in range(8):
-        row = db_one("SELECT image, enriquecido, link FROM offers WHERE id=?", (mid,))
-        if not row or row["image"] or row["enriquecido"] or not row["link"]:
+        row = db_one("SELECT enriquecido, link FROM offers WHERE id=?", (mid,))
+        if not row or row["enriquecido"] or not row["link"]:
             break
         time.sleep(0.25)
     row = db_one("SELECT * FROM offers WHERE id=?", (mid,))
@@ -939,7 +940,7 @@ def json_do_arquivo(arquivos, nome, padrao):
 def oferta_publica(r):
     o = offer_row_to_json(r)
     o["text"] = (o.get("text") or "")[:1500]
-    for k in ("final_url", "received_at"):
+    for k in ("received_at",):  # final_url vai junto: o "Ir à loja" do app abre direto nele
         o.pop(k, None)
     return o
 
@@ -1081,27 +1082,23 @@ def linha_historico(hist):
 
 
 def payload_oferta(o, matched):
-    # No máximo 3 linhas: o Windows corta o resto (o preço já vai no título)
-    linhas = []
+    # Linhas curtas (o Windows corta depois de ~3; o preço já vai no título)
     hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
     cupons = json.loads(o["coupons"]) if isinstance(o.get("coupons"), str) else (o.get("coupons") or [])
-    l1 = []
+    cupom = None
+    if cupons or o.get("coupon"):
+        cupom = ("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"])
+    elif o.get("coupon_note"):
+        cupom = "🎟️ " + o["coupon_note"]
+    loja = []
+    if o.get("store"):
+        loja.append(o["store"])
     if o.get("price") and o.get("old_price"):
         desc = round((1 - o["price"] / o["old_price"]) * 100)
-        l1.append(f"de {brl_curto(o['old_price'])}" + (f" (-{desc}%)" if desc > 0 else ""))
-    if o.get("store"):
-        l1.append(o["store"])
-    if cupons or o.get("coupon"):
-        l1.append("🏷️ " + (" · ".join(cupons) or o["coupon"]))
-    elif o.get("coupon_note"):
-        l1.append("🎟️ " + o["coupon_note"])
-    if l1:
-        linhas.append(" · ".join(l1))
+        loja.append(f"de {brl_curto(o['old_price'])}" + (f" (-{desc}%)" if desc > 0 else ""))
+    base = [x for x in (cupom, " · ".join(loja)) if x]
     etiqueta, tipo = etiqueta_e_tipo(o.get("price"), hist)
-    if etiqueta:
-        linhas.append(etiqueta)
-    if hist and hist["n"] > 1:
-        linhas.append(linha_historico(hist))
+    linhas = base + ([etiqueta] if etiqueta else []) + ([linha_historico(hist)] if hist and hist["n"] > 1 else [])
     # Título: preço na frente, para bater o olho (e o alerta, quando houver)
     titulo = (f"{fmt_brl(o['price'])} · " if o.get("price") else "") + o["title"]
     if matched:
@@ -1109,6 +1106,9 @@ def payload_oferta(o, matched):
     # Resumo da oferta vai junto: o app abre o detalhe na hora, mesmo antes do Gist atualizar
     resumo = {k: o.get(k) for k in ("id", "title", "price", "old_price", "coupon", "coupon_note",
                                     "link", "coupon_link", "store", "image", "posted_at", "channel")}
+    # "Ir à loja" abre direto no endereço final do produto: pula os redirecionamentos do
+    # encurtador de afiliado (tidd.ly, meli.la...), que são o que demora
+    resumo["link"] = o.get("final_url") or o.get("link")
     resumo["coupons"] = cupons
     if hist:  # sem a lista "ultimos": o push tem limite de tamanho
         resumo["historico"] = {k: v for k, v in hist.items() if k != "ultimos"}
@@ -1118,6 +1118,8 @@ def payload_oferta(o, matched):
     return {
         "title": titulo[:120],
         "body": "\n".join(linhas) or (o.get("text") or "")[:160],
+        # PC: a etiqueta e as médias vão na faixa da imagem; o texto fica só com cupom e loja
+        "_body_pc": "\n".join(base) or (o.get("text") or "")[:160],
         "tag": "oferta-" + o["id"],
         "image": o.get("image"),
         "oferta": resumo,
@@ -1192,6 +1194,7 @@ def imagem_notificacao_pc(payload):
 def enviar_oferta(payload, alvo_pc=None, so_pc=False):
     """Celulares recebem o payload normal; o Chrome do PC recebe com a imagem da faixa colorida."""
     n = 0
+    body_pc = payload.pop("_body_pc", None)
     if not so_pc:
         with _push["lock"]:
             celulares = list(_push["inscricoes"])
@@ -1199,7 +1202,8 @@ def enviar_oferta(payload, alvo_pc=None, so_pc=False):
     pcs = alvo_pc if alvo_pc is not None else inscricoes_pc()
     if pcs:
         img = imagem_notificacao_pc(payload)
-        n += enviar_push({**payload, "image": img} if img else payload, pcs)
+        # com a imagem da faixa, o texto fica só com cupom e loja; sem ela, vai o texto completo
+        n += enviar_push({**payload, "image": img, "body": body_pc or payload["body"]} if img else payload, pcs)
     return n
 
 
