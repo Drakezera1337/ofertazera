@@ -1105,25 +1105,32 @@ def linha_historico(hist):
 
 
 def payload_oferta(o, matched):
-    # Linhas curtas (o Windows corta depois de ~3; o preço já vai no título)
+    # Um item por linha, com ícone (o Windows mostra ~3 linhas além do título):
+    #   título (negrito): ícone do tipo + nome do item
+    #   💰 preço (de/por)   🏷️ cupom   🛒 loja
     hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
     cupons = json.loads(o["coupons"]) if isinstance(o.get("coupons"), str) else (o.get("coupons") or [])
+    preco = None
+    if o.get("price"):
+        preco = f"💰 {fmt_brl(o['price'])}"
+        if o.get("old_price"):
+            desc = round((1 - o["price"] / o["old_price"]) * 100)
+            preco += f"  (de {brl_curto(o['old_price'])}" + (f" · -{desc}%" if desc > 0 else "") + ")"
     cupom = None
     if cupons or o.get("coupon"):
         cupom = ("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"])
     elif o.get("coupon_note"):
         cupom = "🎟️ " + o["coupon_note"]
-    loja = []
-    if o.get("store"):
-        loja.append(o["store"])
-    if o.get("price") and o.get("old_price"):
-        desc = round((1 - o["price"] / o["old_price"]) * 100)
-        loja.append(f"de {brl_curto(o['old_price'])}" + (f" (-{desc}%)" if desc > 0 else ""))
-    base = [x for x in (cupom, " · ".join(loja)) if x]
+    loja = f"🛒 {o['store']}" if o.get("store") else None
+    base = [x for x in (preco, cupom, loja) if x]
     etiqueta, tipo = etiqueta_e_tipo(o.get("price"), hist)
     linhas = base + ([etiqueta] if etiqueta else []) + ([linha_historico(hist)] if hist and hist["n"] > 1 else [])
-    # Título: preço na frente, para bater o olho (e o alerta, quando houver)
-    titulo = (f"{fmt_brl(o['price'])} · " if o.get("price") else "") + o["title"]
+    # Título: só o nome do item, com o ícone do tipo (e o alerta, quando houver)
+    chave = (db_one("SELECT item_key FROM historico_precos WHERE offer_id=?", (o["id"],)) or {}).get("item_key") or ""
+    icone = ("🖥️" if chave.startswith("gpu:") else "🎮" if chave.startswith("console:")
+             else "🕹️" if chave.startswith("controle:") else "🎟️" if not o.get("price") and (cupom or "cupom" in normalize(o["title"]))
+             else "🛒")
+    titulo = f"{icone} {o['title']}"
     if matched:
         titulo = f"🎯 {matched[0]} · {titulo}"
     # Resumo da oferta vai junto: o app abre o detalhe na hora, mesmo antes do Gist atualizar
@@ -1192,11 +1199,20 @@ def imagem_notificacao_pc(payload):
             with urllib.request.urlopen(urllib.request.Request(o["image"], headers=NAVEGADOR), timeout=6) as r:
                 import io as _io
                 foto = Image.open(_io.BytesIO(r.read())).convert("RGB")
-            foto.thumbnail((L - 20, A - FAIXA - 16))
+            # encaixa no espaço (amplia foto pequena da loja, reduz a grande)
+            esc = min((L - 20) / foto.width, (A - FAIXA - 16) / foto.height)
+            foto = foto.resize((max(1, int(foto.width * esc)), max(1, int(foto.height * esc))), Image.LANCZOS)
             img.paste(foto, ((L - foto.width) // 2, (A - FAIXA - foto.height) // 2))
         except Exception:  # noqa: BLE001 - sem foto, fica só a faixa
             pass
     d = ImageDraw.Draw(img)
+    # Preço grande no canto da foto (roxo do app), para bater o olho
+    if o.get("price"):
+        txt = fmt_brl(o["price"])
+        fp = _fonte("segoeuib.ttf", 44)
+        larg = int(d.textlength(txt, font=fp))
+        d.rounded_rectangle([14, 14, 14 + larg + 36, 14 + 66], radius=16, fill=(110, 10, 214))
+        d.text((14 + 18, 14 + 33), txt, font=fp, fill="white", anchor="lm")
     cor = CORES_FAIXA.get(tipo, (110, 10, 214))
     d.rectangle([0, A - FAIXA, L, A], fill=cor)
     etiqueta = (etiqueta_e_tipo(o.get("price"), hist)[0] or "").replace("🔥 ", "")
