@@ -428,6 +428,16 @@ function descreverAparelho() {
   const tipo = /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : 'Computador';
   return `${tipo} · Ofertazera (ativado em ${new Date().toLocaleDateString('pt-BR')})`;
 }
+// Inscrição de push que o aparelho tem DE VERDADE agora (o iPhone pode descartá-la sem avisar)
+async function inscricaoReal() {
+  if (!pushSuportado()) return null;
+  try {
+    const reg = await navigator.serviceWorker.getRegistration('./');
+    return (await reg?.pushManager.getSubscription()) || null;
+  } catch { return null; }
+}
+
+// Sempre cria uma inscrição NOVA (descarta a do aparelho, se houver) e troca a antiga no Gist
 async function ativarPush() {
   if (!Sync.enabled()) return toast('Conecte ao PC primeiro (Ler QR do PC)');
   const permissao = await Notification.requestPermission();
@@ -435,17 +445,36 @@ async function ativarPush() {
   try {
     const reg = await navigator.serviceWorker.getRegistration('./') || await navigator.serviceWorker.register('sw.js');
     await navigator.serviceWorker.ready;
-    const sub = (await reg.pushManager.getSubscription())
-      || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: chaveParaBytes(OZ_CONFIG.pushChavePublica) });
+    const anterior = lerJSON(K.push, null);
+    const atual = await reg.pushManager.getSubscription();
+    const velhos = [anterior?.endpoint, atual?.endpoint].filter(Boolean);
+    await atual?.unsubscribe().catch(() => {});
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: chaveParaBytes(OZ_CONFIG.pushChavePublica) });
     const { endpoint, keys } = sub.toJSON();
-    const registro = { endpoint, keys, aparelho: descreverAparelho(), criadoEm: Date.now() };
-    await Sync.atualizarInscricao(endpoint, registro);
+    // já pede um teste: o PC envia em até 30 s
+    const registro = { endpoint, keys, aparelho: descreverAparelho(), criadoEm: Date.now(), testeEm: Date.now() };
+    await Sync.atualizarInscricao(endpoint, registro, velhos);
     gravarJSON(K.push, registro);
-    toast('Notificações ativadas neste aparelho');
+    toast('Notificações ativadas — um teste chega em até 30 s');
   } catch (err) {
     toast(`Não foi possível ativar: ${err.message}`);
   }
   renderSettings();
+}
+
+// Ao abrir o app: se o iPhone trocou a inscrição sozinho, atualiza no Gist sem pedir nada
+async function conferirInscricao() {
+  const registro = lerJSON(K.push, null);
+  if (NO_PC || !registro || !Sync.enabled()) return;
+  const sub = await inscricaoReal();
+  if (sub && sub.endpoint !== registro.endpoint) {
+    const { endpoint, keys } = sub.toJSON();
+    const novo = { ...registro, endpoint, keys, criadoEm: Date.now() };
+    try {
+      await Sync.atualizarInscricao(endpoint, novo, [registro.endpoint]);
+      gravarJSON(K.push, novo);
+    } catch { /* tenta na próxima abertura */ }
+  }
 }
 async function testarPush() {
   const registro = lerJSON(K.push, null);
@@ -604,7 +633,10 @@ async function renderSettings() {
   }
 
   const inscricao = lerJSON(K.push, null);
-  const ativo = Boolean(inscricao) && pushSuportado() && Notification.permission === 'granted';
+  const real = await inscricaoReal();
+  // ativa de verdade: o aparelho ainda tem a mesma inscrição que está no servidor
+  const ativo = Boolean(inscricao && real && real.endpoint === inscricao.endpoint) && Notification.permission === 'granted';
+  const perdida = Boolean(inscricao) && !ativo && pushSuportado() && Notification.permission !== 'denied';
   const conectado = Sync.enabled();
   const instalado = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   view.innerHTML = `${conectado ? blocoMonitor() : ''}
@@ -613,11 +645,13 @@ async function renderSettings() {
     <p>${!pushSuportado() ? '⚠️ Este navegador não suporta notificações. No iPhone, abra o Ofertazera pelo ícone da tela de início (iOS 16.4 ou mais novo).'
       : ativo ? '✅ Notificações ativas neste aparelho. Ofertas dos seus alertas chegam na hora, mesmo com o app fechado.'
         : Notification.permission === 'denied' ? '🚫 Notificações bloqueadas: libere nas configurações do celular/navegador.'
-          : 'Notificações desligadas neste aparelho.'}</p>
+          : perdida ? '⚠️ O aparelho descartou a inscrição de notificações (o PC envia, mas nada aparece). Toque em <b>Reativar notificações</b>.'
+            : 'Notificações desligadas neste aparelho.'}</p>
     <div class="row">
-      ${!ativo && pushSuportado() && Notification.permission !== 'denied' ? '<button class="btn btn-orange" id="ativar">🔔 Ativar notificações</button>' : ''}
+      ${!ativo && pushSuportado() && Notification.permission !== 'denied' ? `<button class="btn btn-orange" id="ativar">🔔 ${perdida ? 'Reativar' : 'Ativar'} notificações</button>` : ''}
       ${ativo ? '<button class="btn btn-purple" id="testar">Enviar teste</button><button class="btn btn-ghost" id="desativar">Desativar</button>' : ''}
     </div>
+    ${ativo ? '<p style="margin-top:10px">Teste não chega? Toque em <a href="#" id="renovar">renovar a inscrição</a>.</p>' : ''}
   </div>
   <div class="panel">
     <h2>🔗 Conexão com o PC</h2>
@@ -632,6 +666,7 @@ async function renderSettings() {
   $('#ativar')?.addEventListener('click', ativarPush);
   $('#testar')?.addEventListener('click', testarPush);
   $('#desativar')?.addEventListener('click', desativarPush);
+  $('#renovar')?.addEventListener('click', (e) => { e.preventDefault(); ativarPush(); });
   $('#lerQr').onclick = lerQr;
   $('#pararQr').onclick = pararLeitorQr;
   $('#linkConfig').onchange = (e) => { if (aplicarLinkConfig(e.target.value)) { location.hash = '#/'; carregar(); } e.target.value = ''; };
@@ -724,6 +759,7 @@ if ('serviceWorker' in navigator && !NO_PC) navigator.serviceWorker.register('sw
 atualizarSelo();
 rotear();
 carregar().then(() => { if (NO_PC) laçoPc(); });
+conferirInscricao();
 
 // Zoom da página bloqueado no celular (pinça e dois toques não ampliam sem querer):
 // - iPhone/Safari ignora o user-scalable=no e manda eventos "gesture*" na pinça;

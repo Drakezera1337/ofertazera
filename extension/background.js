@@ -118,3 +118,24 @@ chrome.alarms.onAlarm.addListener((a) => { if (a.name === "conferirAbas") confer
 chrome.tabs.onRemoved.addListener(() => setTimeout(conferirAbas, 5000));
 chrome.windows.onCreated.addListener(() => setTimeout(conferirAbas, 3000));
 chrome.storage.onChanged.addListener((ch) => { if (ch.channels || ch.abrirAbas) conferirAbas(); });
+
+// ---------------------------------------------------------------- Manager
+// O Manager (D:\Loja\Programa\Manager) pergunta a cada minuto se esta extensão está bem.
+// Só ele pode perguntar (id fixo pela "key" do manifest dele).
+const MANAGER_ID = "hfllkpogjhbmnepbgfpdekbpppfonppi";
+chrome.runtime.onMessageExternal.addListener((msg, sender, responder) => {
+  if (sender.id !== MANAGER_ID || msg?.tipo !== "manager:status") return;
+  (async () => {
+    const cfg = await chrome.storage.sync.get(DEFAULTS);
+    const canais = canaisConfigurados(cfg.channels).map((c) => c.canal);
+    const abas = await chrome.tabs.query({ url: ["https://discord.com/channels/*", "https://*.discord.com/channels/*"] });
+    const abertas = abas.filter((a) => canais.includes(canalDaUrl(a.url || a.pendingUrl)));
+    return {
+      app: "ofertazera", versao: chrome.runtime.getManifest().version, agora: Date.now(),
+      servidor: cfg.server, abrirAbas: cfg.abrirAbas, canais: canais.length,
+      abasAbertas: abertas.length, abasDescartadas: abertas.filter((a) => a.discarded).length,
+      enviadas: stats.sent, ultimoEnvioOk: stats.lastOk, ultimoErro: stats.lastError,
+    };
+  })().then(responder, (e) => responder({ app: "ofertazera", erro: String(e.message || e) }));
+  return true;
+});

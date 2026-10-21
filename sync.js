@@ -64,10 +64,12 @@ const Sync = (() => {
     });
   }
 
-  // Aparelhos que recebem notificações: novo = null remove o aparelho
-  async function atualizarInscricao(endpoint, novo) {
+  // Aparelhos que recebem notificações: novo = null remove o aparelho.
+  // remover: endpoints antigos deste aparelho (inscrição que o iPhone descartou) que saem junto.
+  async function atualizarInscricao(endpoint, novo, remover = []) {
     const { 'push.json': lista } = await ler({ 'push.json': [] });
-    const resto = (Array.isArray(lista) ? lista : []).filter((r) => r && r.endpoint !== endpoint);
+    const fora = new Set([endpoint, ...remover]);
+    const resto = (Array.isArray(lista) ? lista : []).filter((r) => r && !fora.has(r.endpoint));
     if (novo) resto.push(novo);
     await gravar('push.json', resto);
   }
