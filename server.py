@@ -1050,40 +1050,58 @@ def etiqueta_historico(preco, hist):
     """Comparação com o histórico do item, igual à etiqueta do card no app."""
     if not hist or not preco:
         return None
+    return etiqueta_e_tipo(preco, hist)[0]
+
+
+def etiqueta_e_tipo(preco, hist):
+    """(texto, tipo) — tipo dá a cor da faixa na imagem do PC: menor/abaixo = verde, acima = vermelho."""
+    if not hist or not preco:
+        return None, None
     if hist["n"] < 2:
-        return f"🆕 1º registro de {hist['nome']}"
+        return f"1º REGISTRO DE {hist['nome'].upper()}", "novo"
     if preco <= hist["menor"]:
-        return "🔥 MENOR PREÇO JÁ VISTO"
+        return "🔥 MENOR PREÇO JÁ VISTO", "menor"
     pct = round((preco / hist["media"] - 1) * 100)
     if pct <= -1:
-        return f"🟢 ▼ {-pct}% ABAIXO DA MÉDIA"  # notificação é só texto: o círculo dá a cor
+        return f"▼ {-pct}% ABAIXO DA MÉDIA", "abaixo"
     if pct >= 1:
-        return f"🔴 ▲ {pct}% ACIMA DA MÉDIA"
-    return "➖ Na média"
+        return f"▲ {pct}% ACIMA DA MÉDIA", "acima"
+    return "NA MÉDIA", "media"
+
+
+def brl_curto(v):
+    return "R$" + fmt_brl(v)[3:] if v is not None else ""
+
+
+def linha_historico(hist):
+    """Menor (mês/ano) · Média · Maior — curta, para caber na notificação."""
+    m = mes_ano(hist["menorEm"])
+    return (f"Menor {brl_curto(hist['menor'])} ({m[:3]}/{m[-2:]}) · Média {brl_curto(round(hist['media']))}"
+            f" · Maior {brl_curto(hist['maior'])}")
 
 
 def payload_oferta(o, matched):
+    # No máximo 3 linhas: o Windows corta o resto (o preço já vai no título)
     linhas = []
     hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
-    if o.get("price"):
-        p = fmt_brl(o["price"])
-        if o.get("old_price"):
-            desc = round((1 - o["price"] / o["old_price"]) * 100)
-            p += f"  (de {fmt_brl(o['old_price'])}" + (f" · -{desc}%" if desc > 0 else "") + ")"
-        linhas.append("💰 " + p + (f" · {o['store']}" if o.get("store") else ""))
-    elif o.get("store"):
-        linhas.append("🛒 " + o["store"])
     cupons = json.loads(o["coupons"]) if isinstance(o.get("coupons"), str) else (o.get("coupons") or [])
+    l1 = []
+    if o.get("price") and o.get("old_price"):
+        desc = round((1 - o["price"] / o["old_price"]) * 100)
+        l1.append(f"de {brl_curto(o['old_price'])}" + (f" (-{desc}%)" if desc > 0 else ""))
+    if o.get("store"):
+        l1.append(o["store"])
     if cupons or o.get("coupon"):
-        linhas.append(("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"]))
+        l1.append("🏷️ " + (" · ".join(cupons) or o["coupon"]))
     elif o.get("coupon_note"):
-        linhas.append("🎟️ " + o["coupon_note"] + " — resgate antes")
-    etiqueta = etiqueta_historico(o.get("price"), hist)
+        l1.append("🎟️ " + o["coupon_note"])
+    if l1:
+        linhas.append(" · ".join(l1))
+    etiqueta, tipo = etiqueta_e_tipo(o.get("price"), hist)
     if etiqueta:
         linhas.append(etiqueta)
     if hist and hist["n"] > 1:
-        linhas.append(f"📊 Menor {fmt_brl(hist['menor'])} ({mes_ano(hist['menorEm'])}) · Média {fmt_brl(round(hist['media']))}"
-                      f" · Maior {fmt_brl(hist['maior'])} · {hist['n']} ofertas")
+        linhas.append(linha_historico(hist))
     # Título: preço na frente, para bater o olho (e o alerta, quando houver)
     titulo = (f"{fmt_brl(o['price'])} · " if o.get("price") else "") + o["title"]
     if matched:
@@ -1095,7 +1113,8 @@ def payload_oferta(o, matched):
     if hist:  # sem a lista "ultimos": o push tem limite de tamanho
         resumo["historico"] = {k: v for k, v in hist.items() if k != "ultimos"}
     # fica na tela até fechar (Windows) quando é alerta seu ou o menor preço já visto
-    resumo["destaque"] = bool(matched) or (etiqueta == "🔥 MENOR PREÇO JÁ VISTO")
+    resumo["destaque"] = bool(matched) or tipo == "menor"
+    resumo["tipo"] = tipo
     return {
         "title": titulo[:120],
         "body": "\n".join(linhas) or (o.get("text") or "")[:160],
@@ -1105,8 +1124,87 @@ def payload_oferta(o, matched):
     }
 
 
+# --------------------------------------------------------------------------- #
+# Imagem da notificação no PC: foto do produto + faixa colorida (verde abaixo da
+# média / menor preço, vermelho acima) com a etiqueta e Menor · Média · Maior.
+# O texto da notificação não aceita cor; a imagem grande do Windows aceita.
+# Fica em notif_cache/ (servido em localhost; o iPhone não mostra imagem em push web).
+# --------------------------------------------------------------------------- #
+NOTIF_DIR = os.path.join(BASE_DIR, "notif_cache")
+CORES_FAIXA = {"abaixo": (0, 168, 90), "menor": (0, 168, 90), "acima": (226, 38, 77)}
+FONTES = r"C:\Windows\Fonts"
+
+
+def _fonte(nome, tamanho):
+    from PIL import ImageFont
+    for arq in (nome, "segoeuib.ttf", "arialbd.ttf"):
+        try:
+            return ImageFont.truetype(os.path.join(FONTES, arq), tamanho)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def imagem_notificacao_pc(payload):
+    """Monta a imagem e devolve a URL em localhost (ou None se não der)."""
+    o = payload.get("oferta") or {}
+    hist, tipo = o.get("historico"), o.get("tipo")
+    if not tipo:
+        return None
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return None
+    os.makedirs(NOTIF_DIR, exist_ok=True)
+    for arq in os.listdir(NOTIF_DIR):  # limpa as de mais de 2 dias
+        cam = os.path.join(NOTIF_DIR, arq)
+        if time.time() - os.path.getmtime(cam) > 2 * 86400:
+            os.remove(cam)
+    L, A, FAIXA = 720, 360, 128
+    img = Image.new("RGB", (L, A), (255, 255, 255))
+    if o.get("image"):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(o["image"], headers=NAVEGADOR), timeout=6) as r:
+                import io as _io
+                foto = Image.open(_io.BytesIO(r.read())).convert("RGB")
+            foto.thumbnail((L - 20, A - FAIXA - 16))
+            img.paste(foto, ((L - foto.width) // 2, (A - FAIXA - foto.height) // 2))
+        except Exception:  # noqa: BLE001 - sem foto, fica só a faixa
+            pass
+    d = ImageDraw.Draw(img)
+    cor = CORES_FAIXA.get(tipo, (110, 10, 214))
+    d.rectangle([0, A - FAIXA, L, A], fill=cor)
+    etiqueta = (etiqueta_e_tipo(o.get("price"), hist)[0] or "").replace("🔥 ", "")
+    fonte1 = _fonte("segoeuib.ttf", 40)
+    while d.textlength(etiqueta, font=fonte1) > L - 40 and fonte1.size > 22:
+        fonte1 = _fonte("segoeuib.ttf", fonte1.size - 2)
+    d.text((L // 2, A - FAIXA + 38), etiqueta, font=fonte1, fill="white", anchor="mm")
+    sub = linha_historico(hist) if hist and hist.get("n", 0) > 1 else (hist or {}).get("nome", "")
+    fonte2 = _fonte("segoeui.ttf", 26)
+    while d.textlength(sub, font=fonte2) > L - 30 and fonte2.size > 16:
+        fonte2 = _fonte("segoeui.ttf", fonte2.size - 1)
+    d.text((L // 2, A - FAIXA + 92), sub, font=fonte2, fill="white", anchor="mm")
+    nome = f"{o.get('id', 'x')}.png"
+    img.save(os.path.join(NOTIF_DIR, nome), optimize=True)
+    return f"http://localhost:{PORT}/notif_cache/{nome}?t={int(time.time())}"
+
+
+def enviar_oferta(payload, alvo_pc=None, so_pc=False):
+    """Celulares recebem o payload normal; o Chrome do PC recebe com a imagem da faixa colorida."""
+    n = 0
+    if not so_pc:
+        with _push["lock"]:
+            celulares = list(_push["inscricoes"])
+        n += enviar_push(payload, celulares)
+    pcs = alvo_pc if alvo_pc is not None else inscricoes_pc()
+    if pcs:
+        img = imagem_notificacao_pc(payload)
+        n += enviar_push({**payload, "image": img} if img else payload, pcs)
+    return n
+
+
 def notify_offer(row, matched):
-    n = enviar_push(payload_oferta(row, matched))
+    n = enviar_oferta(payload_oferta(row, matched))
     print(f"[push] {row['title'][:50]} -> {n} aparelho(s)")
 
 
@@ -1388,8 +1486,11 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = payload_oferta(row, ["Exemplo"]) if row else None
             else:
                 payload = None
-            payload = payload or {"title": "Ofertazera", "body": "🔔 Teste: as notificações estão funcionando!",
-                                  "tag": "ofertazera-teste"}
+            if payload:  # oferta de exemplo: mesmo caminho das ofertas de verdade (imagem com faixa no PC)
+                n = enviar_oferta(payload, alvo_pc=alvo, so_pc=alvo is not None)
+                return self._json({"ok": n > 0, "aparelhos": n})
+            payload = {"title": "Ofertazera", "body": "🔔 Teste: as notificações estão funcionando!",
+                       "tag": "ofertazera-teste"}
             n = enviar_push(payload, alvo)
             return self._json({"ok": n > 0, "aparelhos": n})
         return self._json({"error": "rota inválida"}, 404)

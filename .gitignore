@@ -7,3 +7,4 @@ __pycache__/
 *.tmp
 server.log
 server.log.1
+notif_cache/
