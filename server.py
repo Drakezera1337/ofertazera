@@ -1093,6 +1093,17 @@ def etiqueta_e_tipo(preco, hist):
     return "NA MÉDIA", "media"
 
 
+def etiqueta_curta(etiqueta, tipo):
+    """Versão para ir entre parênteses depois do preço: '▲ 7% acima da média', 'menor preço já visto'."""
+    if tipo == "menor":
+        return "🔥 menor preço já visto"
+    if tipo == "novo":
+        return "1º registro"
+    if tipo == "media":
+        return "na média"
+    return etiqueta.replace("ACIMA DA MÉDIA", "acima da média").replace("ABAIXO DA MÉDIA", "abaixo da média")
+
+
 def brl_curto(v):
     return "R$" + fmt_brl(v)[3:] if v is not None else ""
 
@@ -1105,26 +1116,32 @@ def linha_historico(hist):
 
 
 def payload_oferta(o, matched):
-    # Um item por linha, com ícone (o Windows mostra ~3 linhas além do título):
+    # Um item por linha, o mais importante primeiro (o celular corta o fim):
     #   título (negrito): ícone do tipo + nome do item
-    #   💰 preço (de/por)   🏷️ cupom   🛒 loja
+    #   💰 preço (comparação com a média) · de/por
+    #   📊 Menor · Média · Maior   (só no celular; no PC isso vai na faixa da imagem)
+    #   🏷️ cupom
+    #   🛒 loja
     hist = anexar_historico([{"id": o["id"]}])[0]["historico"] if o.get("price") else None
     cupons = json.loads(o["coupons"]) if isinstance(o.get("coupons"), str) else (o.get("coupons") or [])
+    etiqueta, tipo = etiqueta_e_tipo(o.get("price"), hist)
     preco = None
     if o.get("price"):
         preco = f"💰 {fmt_brl(o['price'])}"
+        if etiqueta:
+            preco += f" ({etiqueta_curta(etiqueta, tipo)})"
         if o.get("old_price"):
             desc = round((1 - o["price"] / o["old_price"]) * 100)
-            preco += f"  (de {brl_curto(o['old_price'])}" + (f" · -{desc}%" if desc > 0 else "") + ")"
+            preco += f" · de {brl_curto(o['old_price'])}" + (f" -{desc}%" if desc > 0 else "")
+    medias = ("📊 " + linha_historico(hist)) if hist and hist["n"] > 1 else None
     cupom = None
     if cupons or o.get("coupon"):
         cupom = ("🏷️ Cupons: " if len(cupons) > 1 else "🏷️ Cupom: ") + (" · ".join(cupons) or o["coupon"])
     elif o.get("coupon_note"):
         cupom = "🎟️ " + o["coupon_note"]
     loja = f"🛒 {o['store']}" if o.get("store") else None
-    base = [x for x in (preco, cupom, loja) if x]
-    etiqueta, tipo = etiqueta_e_tipo(o.get("price"), hist)
-    linhas = base + ([etiqueta] if etiqueta else []) + ([linha_historico(hist)] if hist and hist["n"] > 1 else [])
+    base = [x for x in (preco, cupom, loja) if x]            # PC (médias na imagem)
+    linhas = [x for x in (preco, medias, cupom, loja) if x]  # celular
     # Título: só o nome do item, com o ícone do tipo (e o alerta, quando houver)
     chave = (db_one("SELECT item_key FROM historico_precos WHERE offer_id=?", (o["id"],)) or {}).get("item_key") or ""
     icone = ("🖥️" if chave.startswith("gpu:") else "🎮" if chave.startswith("console:")
@@ -1527,6 +1544,17 @@ class Handler(SimpleHTTPRequestHandler):
         if path == "/api/push-pc-remover":
             set_setting("push_pc", json.dumps([i for i in inscricoes_pc() if i["endpoint"] != body.get("endpoint")]))
             return self._json({"ok": True})
+        if path == "/api/reenviar":
+            # reenvia uma oferta para todos os aparelhos (padrão: a última placa de vídeo)
+            if body.get("id"):
+                row = db_one("SELECT * FROM offers WHERE id=?", (str(body["id"]),))
+            else:
+                row = db_one("SELECT o.* FROM offers o JOIN historico_precos h ON h.offer_id = o.id "
+                             "WHERE h.item_key LIKE 'gpu:%' ORDER BY o.posted_at DESC LIMIT 1")
+            if not row:
+                return self._json({"erro": "oferta não encontrada"}, 404)
+            n = enviar_oferta(payload_oferta(row, json.loads(row["matched"] or "[]")))
+            return self._json({"ok": n > 0, "aparelhos": n, "titulo": row["title"]})
         if path == "/api/push-teste":
             alvo = [i for i in inscricoes_pc() if i["endpoint"] == body.get("endpoint")] if body.get("endpoint") else None
             if body.get("exemplo"):
